@@ -1,0 +1,67 @@
+# --- Large biological data: never commit ---
+# Genomes, reads, alignments, indexes, blast DBs
+*.fa
+*.fasta
+*.fna
+*.faa
+*.fastq
+*.fq
+*.fq.gz
+*.fastq.gz
+*.fa.gz
+*.fasta.gz
+*.gz
+*.bam
+*.sam
+*.cram
+*.bai
+*.vcf
+*.vcf.gz
+*.bed.gz
+*.2bit
+*.nhr
+*.nin
+*.nsq
+*.ndb
+*.not
+*.ntf
+*.nto
+*.njs
+*.mmi
+
+# BLAST / minimap / bowtie / bwa index shards
+*.[0-9].bt2
+*.rev.*.bt2
+*.amb
+*.ann
+*.pac
+
+# Data directories (tracked via .gitkeep + manifests only)
+data/raw/*
+data/reference/*
+data/interim/*
+!data/**/.gitkeep
+!data/**/*.md
+!data/**/manifest*
+
+# Results: keep small summaries, ignore bulky intermediates
+results/**/*.fasta
+results/**/*.tsv.gz
+
+# --- Environments / tooling ---
+.snakemake/
+.nextflow/
+work/
+*.log
+env/*/
+!env/*.yml
+!env/*.yaml
+
+# --- Editor / OS ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/

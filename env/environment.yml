@@ -1,0 +1,36 @@
+name: tropi-primers
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  # --- core assembly / sequence handling ---
+  - seqkit            # fast FASTA/FASTQ manipulation & stats
+  - samtools
+  - bedtools
+  - python>=3.11
+  - biopython
+
+  # --- repeat / satellite discovery ---
+  - repeatmodeler     # de novo repeat family modeling
+  - repeatmasker      # annotate/quantify repeat content
+  - trf               # tandem repeats finder (satellites)
+  - red               # fast de novo repeat detection (alt to RepeatModeler)
+
+  # --- specificity screening (the critical step) ---
+  - blast             # makeblastdb + blastn against off-targets
+  - minimap2          # fast long-read/asm-vs-asm mapping
+  - mummer4           # nucmer whole-genome alignment for shared regions
+
+  # --- primer / probe design ---
+  - primer3           # primer3_core
+  - primer3-py        # scripting wrapper
+
+  # --- optional in-silico PCR validation ---
+  - ispcr             # UCSC isPcr (in-silico PCR)
+
+  # --- workflow + analysis ---
+  - snakemake-minimal
+  - pandas
+  - numpy
+  - jupyterlab
+  - matplotlib
