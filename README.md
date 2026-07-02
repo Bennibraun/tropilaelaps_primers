@@ -86,7 +86,7 @@ Minimum viable set — expand as needed. See `docs/references.md` for accessions
 - [ ] Acquire off-target reference genomes (`scripts/00_fetch_references.sh`)
 - [ ] Receive T. mercedesae assembly -> QC (`scripts/01_assembly_qc.sh`)
 - [ ] Repeat discovery
-- [ ] Specificity screen
+- [ ] Specificity screen — assembled off-targets (`03`) + read-based off-targets (`03b`)
 - [ ] Primer design + in-silico PCR
 - [ ] Wet-lab shortlist
 

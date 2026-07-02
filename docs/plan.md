@@ -59,6 +59,17 @@ For every candidate consensus:
 Also screen against nt/NCBI later for peace of mind, but local genomes are the
 authority for the two species that will actually be in the sample.
 
+**Read-based off-targets (Stage 3b).** Off-targets don't need to be assembled. For
+any off-target that exists only as raw WGS reads — the expected situation for a
+_Tropilaelaps_ congener if we ever get one — map its reads onto the candidates
+(`minimap2`) and disqualify any candidate that gets broadly covered
+(`03b_specificity_screen_reads.sh`). This is arguably the *better* screen for
+repeats, since unassembled reads keep the collapsed repeat copies. The read screen
+writes to the same `results/candidates/disqualified.txt`, so the assembly screen
+(3) and read screen (3b) compose freely. The pipeline is thus already wired to
+accept congener WGS the day it appears (public SRA or our own sequencer) — no
+redesign needed, just point 3b at the FASTQs.
+
 ### 4. Copy-number & conservation ranking
 Map candidate back to the tropi assembly to (a) confirm high copy number and (b)
 extract all copies and align them. We want the **conserved core** of the repeat —

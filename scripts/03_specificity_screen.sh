@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Stage 3: screen candidate sequences against off-target genomes.
+# Stage 3: screen candidate sequences against off-target *assembled genomes*.
 # Keeps only candidates with NO meaningful hit in Apis / Varroa / other off-targets.
+# For off-targets that have only raw WGS reads (e.g. a Tropilaelaps congener),
+# use 03b_specificity_screen_reads.sh instead — it writes to the same
+# results/candidates/disqualified.txt so the two screens compose.
 #
 # Usage: scripts/03_specificity_screen.sh candidates.fasta data/reference/*/*.fna
 set -euo pipefail
