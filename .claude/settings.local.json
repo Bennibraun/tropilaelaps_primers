@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "WebFetch(domain:eutils.ncbi.nlm.nih.gov)",
-      "WebFetch(domain:www.ncbi.nlm.nih.gov)"
-    ]
-  }
-}

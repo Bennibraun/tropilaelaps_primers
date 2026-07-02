@@ -65,3 +65,6 @@ Thumbs.db
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
+
+# Claude Code local settings
+.claude/settings.local.json
