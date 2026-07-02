@@ -28,6 +28,10 @@ dependencies:
   # --- optional in-silico PCR validation ---
   - ispcr             # UCSC isPcr (in-silico PCR)
 
+  # --- reference acquisition ---
+  - ncbi-datasets-cli # download off-target genomes by accession
+  - entrez-direct     # fetch T. clareae congener markers (no genome exists)
+
   # --- workflow + analysis ---
   - snakemake-minimal
   - pandas

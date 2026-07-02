@@ -108,3 +108,20 @@ Because we committed to species-level specificity, acquiring **any _Tropilaelaps
 congener sequence** (whole genome, or even marker/satellite reads) is now a
 priority in Stage 0, alongside Apis and Varroa. Track availability in
 `docs/references.md`.
+
+### Reality check (accessions confirmed 2026-07-02)
+Off-target genomes exist and are locked in (Apis mellifera GCF_003254395.2,
+Apis cerana GCF_029169275.1, Varroa destructor GCF_002443255.2, Varroa jacobsoni
+GCF_002532875.2 — all RefSeq). **But there is NO public _T. clareae_ or any
+_Tropilaelaps_ congener genome** — only ~31 GenBank records (25 mitochondrial
+markers). So:
+
+- Full genome-wide species-vs-congener subtraction is **not possible in-silico**
+  with current public data. Honest framing: our pipeline delivers **verified
+  exclusion of Apis and Varroa** (which is what actually matters for the debris
+  sample) plus **best-effort congener divergence at known marker loci**, with true
+  species-level specificity confirmed in the wet lab against _T. clareae_ gDNA.
+- Practically this makes the assay **"detects _Tropilaelaps_, validated as
+  _T. mercedesae_ at tested loci"** until a congener genome or wet-lab cross-test
+  closes the gap. Worth deciding with the user whether that's acceptable for the
+  surveillance question, or whether sourcing _T. clareae_ material is warranted.

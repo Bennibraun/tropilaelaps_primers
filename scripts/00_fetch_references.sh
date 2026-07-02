@@ -7,18 +7,16 @@ set -euo pipefail
 REFDIR="data/reference"
 mkdir -p "$REFDIR"
 
-# accession list: edit these once confirmed in docs/references.md
+# Off-target genome accessions — confirmed vs NCBI Datasets 2026-07-02.
+# See docs/references.md for the full table & rationale.
 declare -A GENOMES=(
-  # ["Apis_mellifera"]="GCF_003254395.2"
-  # ["Apis_cerana"]="GCF_XXXXXXXXX.X"
-  # ["Varroa_destructor"]="GCF_002443255.1"
-  # ["Varroa_jacobsoni"]="GCA_XXXXXXXXX.X"
+  ["Apis_mellifera"]="GCF_003254395.2"     # host honey bee (RefSeq, chromosome)
+  ["Apis_cerana"]="GCF_029169275.1"        # Asian honey bee, natural tropi host (RefSeq)
+  ["Varroa_destructor"]="GCF_002443255.2"  # co-occurring mite (RefSeq)
+  ["Varroa_jacobsoni"]="GCF_002532875.2"   # Asian-range Varroa (RefSeq)
+  # Optional sanity cross-check — public T. mercedesae assembly (NOT the off-target):
+  # ["Tmercedesae_public"]="GCA_002081605.1"
 )
-
-if [ ${#GENOMES[@]} -eq 0 ]; then
-  echo "No accessions set yet. Edit GENOMES[] in this script (see docs/references.md)." >&2
-  exit 1
-fi
 
 for name in "${!GENOMES[@]}"; do
   acc="${GENOMES[$name]}"
@@ -28,4 +26,19 @@ for name in "${!GENOMES[@]}"; do
   unzip -o "$REFDIR/${name}.zip" -d "$REFDIR/${name}"
 done
 
-echo "Done. Record MD5s: find $REFDIR -name '*.fna' -exec md5sum {} \; >> data/reference/manifest.tsv"
+# --- Tropilaelaps congener markers (NO genome exists for T. clareae) ---
+# Species-level specificity was locked, but there is no congener assembly to
+# subtract against — only ~31 GenBank records, mostly mitochondrial markers.
+# Pull them so candidates can at least be checked for divergence at these loci.
+# Requires: entrez-direct  (conda install -c bioconda entrez-direct)
+echo ">> Tropilaelaps clareae markers (Entrez)"
+if command -v esearch >/dev/null 2>&1; then
+  esearch -db nuccore -query "Tropilaelaps clareae" \
+    | efetch -format fasta > "$REFDIR/T_clareae_markers.fasta" || \
+    echo "   (Entrez fetch failed — pull manually; see docs/references.md)" >&2
+else
+  echo "   entrez-direct not installed; skipping congener markers." >&2
+fi
+
+echo "Done. Record MD5s:"
+echo "  find $REFDIR \\( -name '*.fna' -o -name '*.fasta' \\) -exec md5sum {} \\; >> $REFDIR/manifest.tsv"
