@@ -86,11 +86,25 @@ one repeat). Provide: sequences, expected amplicon size/Tm, positive control
 (tropi gDNA), negative controls (Apis, Varroa gDNA, and a no-mite debris sample),
 and predicted cross-reactivity notes.
 
-## Open questions to resolve with the user
-- Endpoint PCR + gel, or qPCR/TaqMan? (affects amplicon length & probe design)
-- Is a single _T. mercedesae_ assembly enough, or do we have/plan multiple
-  populations to confirm conservation across the geographic range we're surveilling?
-- Do we care about distinguishing _T. mercedesae_ from _T. clareae_, or is
-  genus-level "Tropilaelaps present" acceptable for the surveillance question?
-- Availability of a _Varroa jacobsoni_ and _Apis cerana_ assembly (Asian-range
-  off-targets matter most since that's tropi's home range).
+## Decisions (locked)
+
+- **Assay format:** not decided yet → design **flexibly**. Keep amplicons in the
+  70–150 bp qPCR window (works for SYBR/TaqMan/endpoint), and additionally flag a
+  conserved internal segment on each survivor as a **candidate TaqMan probe site**,
+  so we don't have to redesign if we go probe-based. No format is foreclosed.
+- **Specificity level:** **species-specific** — target must be unique to
+  _T. mercedesae_ vs. other _Tropilaelaps_ (esp. _T. clareae_). This makes the
+  off-target set critical: **other _Tropilaelaps_ genomes are required off-targets**,
+  not just Apis/Varroa. If no _T. clareae_ assembly exists publicly, this becomes a
+  known gap to flag (may need in-silico or wet-lab congener check on the shortlist).
+- **Tropi genomes for conservation:** unsure how many → proceed on the **single
+  in-house assembly**, but treat cross-population conservation as an **explicit
+  wet-lab validation risk**. Design primers on the most conserved core of each
+  repeat family (lowest per-copy variance) to maximize the odds the target holds
+  across the surveilled range. Revisit computationally if more assemblies arrive.
+
+## Consequence for the off-target set
+Because we committed to species-level specificity, acquiring **any _Tropilaelaps_
+congener sequence** (whole genome, or even marker/satellite reads) is now a
+priority in Stage 0, alongside Apis and Varroa. Track availability in
+`docs/references.md`.

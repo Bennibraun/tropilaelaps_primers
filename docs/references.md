@@ -10,7 +10,7 @@ specificity screen is reproducible. Fill in accessions when fetched.
 | Off-target (host) | _Apis cerana_ | TBD | NCBI | Asian honey bee — natural tropi host |
 | Off-target (mite) | _Varroa destructor_ | TBD (RefSeq) | NCBI | co-occurring parasitic mite |
 | Off-target (mite) | _Varroa jacobsoni_ | TBD | NCBI/GenBank | Asian-range Varroa |
-| Specificity | _Tropilaelaps clareae_ / spp. | TBD if available | NCBI | species-level discrimination |
+| **Specificity (REQUIRED)** | _Tropilaelaps clareae_ / other spp. | TBD — check availability | NCBI | **Species-level specificity is locked, so a congener sequence is required, not optional. If no assembly exists, flag as a gap (fall back to marker reads / wet-lab congener test).** |
 | Debris flora (opt.) | _Vairimorpha (Nosema)_, wax moth, hive microbes | TBD | NCBI | realistic sample background |
 
 ## Fetch method
