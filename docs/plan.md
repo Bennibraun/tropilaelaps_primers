@@ -36,14 +36,18 @@ assembly — repeats are often collapsed in assemblies, which actually understat
 copy number, so real-genome copy number is a floor, not a ceiling.
 
 ### 2. Repeat discovery
-Run in parallel and merge:
-- **RepeatModeler** (or **Red** for speed) → de novo repeat family consensus library.
-- **TRF** → tandem repeats / satellite monomers directly (report period, copy number).
-- Optionally **k-mer counting** (e.g. very high-frequency k-mers) as an
-  orthogonal way to find high-copy motifs without assembling repeat families.
+Two sources, merged (`scripts/02_repeat_discovery.sh`):
+- **RepeatModeler** family consensus library — run **externally**, not by this
+  repo. It's one of the heaviest, most fragile bioconda installs and a
+  multi-hour-to-multi-day job even on a cluster; the pipeline just takes its
+  output FASTA (`<db>-families.fa`) as an input.
+- **TRF**, run locally on the assembly → tandem repeats / satellite monomers
+  directly (period, copy number, consensus). Fast and safe on a laptop; catches
+  satellite structure RepeatModeler's classifier sometimes lumps into
+  "Unspecified" or misses.
 
-Output: a FASTA of candidate repeat **consensus** sequences + a table of
-(family, monomer length, estimated copy number, genomic span).
+Output: a FASTA of candidate repeat **consensus** sequences (RepeatModeler
+families + TRF monomers, deduped and origin-tagged in the header).
 
 ### 3. Specificity screen (the make-or-break step)
 For every candidate consensus:
@@ -71,11 +75,15 @@ accept congener WGS the day it appears (public SRA or our own sequencer) — no
 redesign needed, just point 3b at the FASTQs.
 
 ### 4. Copy-number & conservation ranking
-Map candidate back to the tropi assembly to (a) confirm high copy number and (b)
-extract all copies and align them. We want the **conserved core** of the repeat —
-the stretch that is near-identical across all copies — because primers must sit on
-invariant bases to hybridize to every copy in every field population. Rank by:
-copy number ↑, core conservation ↑, off-target distance ↑, GC/complexity sane.
+`scripts/04_copy_number_ranking.py`. Self-blastn each surviving candidate back
+onto the tropi assembly to (a) confirm/count real copies and (b) extract them
+(via `seqkit subseq --bed`, respecting strand) and align with `mafft`. We want
+the **conserved core** of the repeat — the stretch that is near-identical across
+copies — because primers must sit on invariant bases to hybridize to every copy
+in every field population. Per-column agreement gives the core window; output is
+`ranked_candidates.tsv` (copy number, core identity) + `conserved_cores.fasta`.
+Alignment input is capped at 50 copies per candidate for laptop feasibility —
+true copy number is still reported from the full blast hit count.
 
 ### 5. Primer / probe design
 Run `primer3` on the conserved core:
@@ -96,6 +104,22 @@ Shortlist ~5–10 pairs spanning different candidate families (don't put all egg
 one repeat). Provide: sequences, expected amplicon size/Tm, positive control
 (tropi gDNA), negative controls (Apis, Varroa gDNA, and a no-mite debris sample),
 and predicted cross-reactivity notes.
+
+## Compute footprint
+With RepeatModeler run externally (see Stage 2), everything left in this repo
+is laptop-sized, not cluster-sized:
+- **TRF** on a ~350 Mb assembly: minutes.
+- **blastn** (Stage 3 off-target screen, Stage 4 self-mapping) against
+  ~200–400 Mb genomes with short queries: minutes per genome.
+- **mafft** on ≤50 copies per candidate: seconds each.
+- **primer3 / isPcr**: seconds.
+- The main variable cost is Stage 3b (mapping raw off-target reads with
+  `minimap2`) if/when congener WGS shows up — scales with read volume, but
+  low-coverage screening data is fine on a laptop; deep WGS may want
+  subsampling or more RAM/time.
+Budget a few GB of disk for genomes + BLAST DBs + 2bit files, and 4+ CPU
+threads to keep things comfortable. A mid-range laptop (8 GB+ RAM, multi-core)
+should handle the full pipeline end to end.
 
 ## Decisions (locked)
 

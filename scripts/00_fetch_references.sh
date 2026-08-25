@@ -20,10 +20,21 @@ declare -A GENOMES=(
 
 for name in "${!GENOMES[@]}"; do
   acc="${GENOMES[$name]}"
+  if [ -f "$REFDIR/${name}.fna" ]; then
+    echo ">> $name  ($acc) — already fetched, skipping"
+    continue
+  fi
   echo ">> $name  ($acc)"
   datasets download genome accession "$acc" --include genome \
     --filename "$REFDIR/${name}.zip"
-  unzip -o "$REFDIR/${name}.zip" -d "$REFDIR/${name}"
+  # NCBI's zip nests the genomic FASTA several directories deep
+  # (ncbi_dataset/data/<accession>/<accession>_..._genomic.fna) — flatten it
+  # to $REFDIR/<name>.fna so downstream scripts can just glob data/reference/*.fna.
+  unzip -o "$REFDIR/${name}.zip" -d "$REFDIR/${name}_raw" >/dev/null
+  fna="$(find "$REFDIR/${name}_raw" -iname '*_genomic.fna' | head -n1)"
+  [ -n "$fna" ] || { echo "   no genomic FASTA found in ${name}.zip" >&2; exit 1; }
+  mv "$fna" "$REFDIR/${name}.fna"
+  rm -rf "$REFDIR/${name}_raw" "$REFDIR/${name}.zip"
 done
 
 # --- Tropilaelaps congener markers (NO genome exists for T. clareae) ---
@@ -40,5 +51,7 @@ else
   echo "   entrez-direct not installed; skipping congener markers." >&2
 fi
 
-echo "Done. Record MD5s:"
-echo "  find $REFDIR \\( -name '*.fna' -o -name '*.fasta' \\) -exec md5sum {} \\; >> $REFDIR/manifest.tsv"
+echo ">> recording MD5s -> $REFDIR/manifest.tsv"
+find "$REFDIR" -maxdepth 1 \( -name '*.fna' -o -name '*.fasta' \) -exec md5sum {} \; > "$REFDIR/manifest.tsv"
+
+echo "Done."

@@ -27,42 +27,45 @@ regions, or any unique single-copy region if no clean repeat emerges.
 
 ```
 [T. mercedesae assembly]          [off-target genomes: Apis, Varroa, other Tropilaelaps]
+[+ RepeatModeler families, run externally]
         |                                          |
         v                                          |
-(1) Repeat discovery                               |
-    RepeatModeler / TRF / Red  --> candidate repeat & satellite families
+(1) Assembly QC        (2) Repeat discovery         |
+    seqkit stats            RepeatModeler families (external input) + TRF (local)
+        |                       --> candidate repeat & satellite consensus set
         |                                          |
         v                                          v
-(2) Specificity screen  <---- blastn / nucmer / minimap2 ---->  REMOVE anything
+(3) Specificity screen  <---- blastn / minimap2 ---->  REMOVE anything
     keep only candidates with NO significant hit in off-targets
         |
         v
-(3) Copy-number & conservation ranking
-    count genomic occurrences; check they cluster in consensus (conserved core)
+(4) Copy-number & conservation ranking
+    blastn self-mapping + mafft; count genomic occurrences, find conserved core
         |
         v
-(4) Primer/probe design (primer3) on the conserved core of surviving candidates
+(5) Primer/probe design (primer3) on the conserved core of surviving candidates
         |
         v
-(5) In-silico PCR validation (isPcr) against tropi (should amplify)
+(6) In-silico PCR validation (isPcr) against tropi (should amplify)
     AND against every off-target genome (must NOT amplify)
         |
         v
-(6) Shortlist -> wet-lab validation
+(7) Shortlist -> wet-lab validation
 ```
 
 Each numbered stage is a script in `scripts/` and a rule in the Snakemake
-workflow (`workflow/Snakefile`, added once inputs land).
+workflow (`workflow/Snakefile`, added once inputs land). RepeatModeler itself
+is not run by this repo — see `docs/plan.md` Stage 2 and "Compute footprint".
 
 ## Repo layout
 
 ```
 data/
-  raw/          # the T. mercedesae assembly (gitignored; tracked via manifest)
+  raw/          # the T. mercedesae assembly + RepeatModeler families FASTA (gitignored; tracked via manifest)
   reference/    # off-target genomes: Apis mellifera, Varroa spp., other Tropilaelaps
-  interim/      # derived files: repeat libs, blast DBs, alignments
+  interim/      # derived files: repeat libs, blast DBs, alignments, 2bit files
 results/
-  candidates/   # surviving unique sequences + designed primers (small files tracked)
+  candidates/   # surviving unique sequences + designed primers (run output, gitignored)
 scripts/        # numbered pipeline steps
 notebooks/      # exploratory analysis / QC plots
 docs/           # methods notes, off-target accession list, design decisions
@@ -83,11 +86,17 @@ Minimum viable set — expand as needed. See `docs/references.md` for accessions
 ## Status
 
 - [x] Repo + structure + environment
+- [x] Pipeline scripts written end-to-end (`scripts/00`–`06`)
 - [ ] Acquire off-target reference genomes (`scripts/00_fetch_references.sh`)
-- [ ] Receive T. mercedesae assembly -> QC (`scripts/01_assembly_qc.sh`)
-- [ ] Repeat discovery
+- [ ] Receive T. mercedesae assembly + RepeatModeler families -> QC (`scripts/01_assembly_qc.sh`)
+- [ ] Repeat discovery (`scripts/02_repeat_discovery.sh`)
 - [ ] Specificity screen — assembled off-targets (`03`) + read-based off-targets (`03b`)
-- [ ] Primer design + in-silico PCR
+- [ ] Copy-number & conservation ranking (`scripts/04_copy_number_ranking.py`)
+- [ ] Primer design (`scripts/05_primer_design.py`) + in-silico PCR (`scripts/06_ispcr_validation.sh`)
 - [ ] Wet-lab shortlist
+
+None of the scripts have been run yet (no assembly in hand) — they're written
+against documented tool behavior but unverified end-to-end. Run stage 0 now
+(doesn't need the tropi genome) so off-targets are ready when the assembly lands.
 
 See `docs/plan.md` for the detailed methods rationale.

@@ -36,17 +36,26 @@
 *.ann
 *.pac
 
-# Data directories (tracked via .gitkeep + manifests only)
+# RepeatModeler working-directory output (run externally — see docs/plan.md
+# Stage 2). Only the final <db>-families.fa is a pipeline input, and it's
+# already caught by *.fa above; everything else here is bulky intermediate
+# junk (Stockholm alignments, cd-hit clusters, BuildDatabase index shards).
+*.stk
+*.clstr
+*.translation
+*.nnd
+*.nni
+*.nog
+
+# Data & results directories: run outputs, not code. Tracked via .gitkeep only.
 data/raw/*
 data/reference/*
 data/interim/*
+results/**/*
 !data/**/.gitkeep
+!results/**/.gitkeep
 !data/**/*.md
 !data/**/manifest*
-
-# Results: keep small summaries, ignore bulky intermediates
-results/**/*.fasta
-results/**/*.tsv.gz
 
 # --- Environments / tooling ---
 .snakemake/
