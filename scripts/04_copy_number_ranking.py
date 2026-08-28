@@ -19,6 +19,7 @@ Requires Python package: biopython
 """
 import argparse
 import csv
+import os
 import shutil
 import subprocess
 import sys
@@ -32,6 +33,8 @@ MIN_COPY_IDENT = 80.0   # % identity to count a blast hit as a real copy (looser
 MIN_COPY_LEN_FRAC = 0.5 # hit must cover at least this fraction of the candidate length
 MAX_COPIES_FOR_MSA = 50 # cap copies fed to mafft per candidate; keeps this laptop-feasible
                          # on high-copy satellites (true copy number is still reported in full)
+MAX_HITS_PER_CANDIDATE = 500  # blastn -max_target_seqs; see blast_copies(). Candidates
+                              # at this ceiling have n_copies reported as a floor.
 CORE_MIN_IDENTITY = 0.90  # per-column agreement fraction required for a base to count as "core"
 CORE_MIN_LEN = 20         # minimum core window length to bother reporting
 
@@ -68,10 +71,20 @@ def build_self_blastdb(assembly, workdir):
 
 def blast_copies(candidates, db, workdir):
     out = workdir / "self_hits.tsv"
+    # -max_target_seqs caps hits per candidate. Without it, self-BLASTing a
+    # repeat library against a repeat-rich genome is effectively quadratic: a
+    # high-copy family matches thousands of loci, and an unbounded run produced a
+    # 4GB hit table that had not finished. We only need enough copies to (a)
+    # estimate copy number and (b) fill an MSA capped at MAX_COPIES_FOR_MSA, so
+    # a generous cap loses nothing downstream. Reported n_copies becomes a floor
+    # for families that hit the cap — noted in the output.
     run([
         "blastn", "-query", str(candidates), "-db", str(db),
         "-task", "blastn", "-word_size", "11",
         "-perc_identity", str(MIN_COPY_IDENT),
+        "-num_threads", os.environ.get("THREADS", "4"),
+        "-max_target_seqs", str(MAX_HITS_PER_CANDIDATE),
+        "-dust", "yes",
         "-outfmt", "6 qseqid sseqid pident length qlen sstart send",
     ], stdout=open(out, "w"))
     return out
@@ -192,8 +205,9 @@ def main():
                          "core_identity": f"{core_ident:.3f}",
                          "note": "no conserved core >= threshold — copies too divergent"})
             continue
+        capped = " (n_copies is a floor: hit cap reached)" if n_copies >= MAX_HITS_PER_CANDIDATE else ""
         rows.append({"candidate_id": cand_id, "n_copies": n_copies, "core_len": len(core_seq),
-                     "core_identity": f"{core_ident:.3f}", "note": ""})
+                     "core_identity": f"{core_ident:.3f}", "note": capped.strip()})
         core_records.append((cand_id, core_seq))
 
     rows.sort(key=lambda r: (-r["n_copies"], -(float(r["core_identity"]) if r["core_identity"] else 0)))

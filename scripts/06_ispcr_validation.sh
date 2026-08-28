@@ -41,6 +41,18 @@ isPcr "$target_2bit" "$PRIMER_FILE" "$WORK/target_hits.psl" -out=psl -maxSize="$
 # count, always numeric on a real row) rather than assuming a fixed line count.
 awk '$1 ~ /^[0-9]+$/ { print $10 }' "$WORK/target_hits.psl" | sort -u > "$WORK/amplifies_target.txt"
 
+# --- on-target product COUNT per pair ---
+# A pair sitting on a high-copy repeat can prime at many loci in the right
+# orientation and spacing, giving multiple products: smeared bands and unreliable
+# qPCR quantification. High copy number helps sensitivity but hurts assay
+# cleanliness, so count products rather than just checking the pair amplifies.
+#   1 product = clean/ideal | 2-5 = tolerable for presence/absence | >5 = smear risk
+awk '$1 ~ /^[0-9]+$/ { print $10 }' "$WORK/target_hits.psl" \
+  | sort | uniq -c | awk '{ print $2"\t"$1 }' | sort -k2,2nr > "$WORK/target_product_counts.tsv"
+awk -F'\t' '$2==1{a++} $2>=2&&$2<=5{b++} $2>5{c++} END{
+  printf "   on-target products: %d pairs=1 (clean) | %d pairs=2-5 | %d pairs>5 (smear risk)\n", a+0,b+0,c+0 }' \
+  "$WORK/target_product_counts.tsv"
+
 : > "$WORK/offtarget_hits.tsv"
 for ref in "${OFFTARGETS[@]}"; do
   name="$(basename "${ref%.*}")"
@@ -55,10 +67,14 @@ cut -f2 "$WORK/offtarget_hits.tsv" | sort -u > "$WORK/hits_any_offtarget.txt"
 comm -23 "$WORK/amplifies_target.txt" "$WORK/hits_any_offtarget.txt" > "$WORK/validated_pair_names.txt"
 
 VALIDATED="$OUT/validated_primers.tsv"
-head -n1 "$PRIMERS" > "$VALIDATED"
+# append n_target_products so the shortlist shows assay cleanliness alongside each pair
+{ head -n1 "$PRIMERS" | tr -d '\n'; printf '\tn_target_products\n'; } > "$VALIDATED"
 awk -F'\t' 'NR>1 { print $1"_pair"$2"\t"$0 }' "$PRIMERS" \
   | grep -Ff "$WORK/validated_pair_names.txt" -w \
-  | cut -f2- >> "$VALIDATED" || true
+  | awk -F'\t' -v CF="$WORK/target_product_counts.tsv" '
+      BEGIN { while ((getline line < CF) > 0) { split(line, pp, "\t"); cnt[pp[1]]=pp[2] } }
+      { key=$1; row=$0; sub(/^[^\t]*\t/, "", row); print row"\t"(key in cnt?cnt[key]:0) }
+    ' >> "$VALIDATED" || true
 
 echo
 echo "Off-target hit log       -> $WORK/offtarget_hits.tsv"

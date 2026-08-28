@@ -36,7 +36,13 @@ GLOBAL_ARGS = {
     "PRIMER_MAX_POLY_X": 4,
     "PRIMER_MAX_SELF_ANY": 8,
     "PRIMER_MAX_SELF_END": 3,
-    "PRIMER_PRODUCT_SIZE_RANGE": [[70, 150]],
+    # Ordered preference tiers: primer3 fills PRIMER_NUM_RETURN from the first
+    # range and only falls back to the second if it can't. Keeps 70-150bp as the
+    # qPCR-optimal target while rescuing candidates whose conserved core is too
+    # short to fit a product in 150bp (a 70-150bp product needs ~110-190bp of
+    # usable core once both primers are placed). product_size is reported per
+    # pair, so tiered results stay visible when picking the wet-lab shortlist.
+    "PRIMER_PRODUCT_SIZE_RANGE": [[70, 150], [150, 250]],
     "PRIMER_NUM_RETURN": 3,
     "PRIMER_PICK_INTERNAL_OLIGO": 1,
     "PRIMER_INTERNAL_OPT_TM": 68.0,

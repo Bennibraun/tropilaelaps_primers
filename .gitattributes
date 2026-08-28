@@ -1,0 +1,5 @@
+# Shell scripts and Python must be LF, always. Checked out with CRLF on Windows,
+# every script here fails at the shebang: /usr/bin/env: 'bash\r': Permission denied
+# — and the \r also corrupts `set -euo pipefail`. This bit the whole pipeline once.
+*.sh text eol=lf
+*.py text eol=lf

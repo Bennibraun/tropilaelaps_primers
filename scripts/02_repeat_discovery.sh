@@ -55,13 +55,32 @@ TRF_PARAMS="2 7 7 80 10 50 2000"
 MIN_PERIOD=20   # bp; drop microsatellite-like short-period repeats (low specificity, prone to homoplasy)
 MIN_COPIES=5    # tandem copies at the locus; we want genuinely repetitive loci, not incidental duplications
 
-echo ">> TRF: whole-genome tandem repeat scan (this can take a few minutes on a few-hundred-Mb genome)"
-# -ngs streams a compact per-repeat summary to stdout instead of writing .html/.dat
-# per input file — the right mode for a whole assembly. NOTE: TRF's exit code is
-# NOT a success/failure code (historically it returns a repeat-count-derived
-# value), so `set -e` must not treat a nonzero exit here as failure — check the
-# output file instead, not $?.
-trf "$ASSEMBLY" $TRF_PARAMS -h -ngs > "$WORK/trf_ngs.txt" || true
+echo ">> TRF: whole-genome tandem repeat scan (parallelized over ${THREADS:-4} workers)"
+# TRF is single-threaded, so we split the assembly into chunks and run one TRF
+# per chunk in parallel, then concatenate. -ngs output is a flat per-sequence
+# stream (@seqname header followed by that sequence's repeats), so concatenating
+# chunk outputs is safe as long as no sequence is split across chunks — seqkit
+# split2 splits on sequence boundaries, never mid-sequence.
+# NOTE: TRF's exit code is NOT a success/failure code (historically it returns a
+# repeat-count-derived value), so `set -e` must not treat a nonzero exit as
+# failure — we check the output file instead, not $?.
+NCHUNK="${THREADS:-4}"
+CHUNKDIR="$WORK/trf_chunks"
+rm -rf "$CHUNKDIR"; mkdir -p "$CHUNKDIR"
+
+echo "   splitting assembly into $NCHUNK parts"
+seqkit split2 -p "$NCHUNK" -O "$CHUNKDIR" -f "$ASSEMBLY" >/dev/null 2>&1
+
+pids=()
+for chunk in "$CHUNKDIR"/*.fa "$CHUNKDIR"/*.fasta; do
+  [ -e "$chunk" ] || continue
+  ( trf "$chunk" $TRF_PARAMS -h -ngs > "${chunk}.trf" 2>/dev/null || true ) &
+  pids+=($!)
+done
+echo "   ${#pids[@]} TRF workers running"
+for pid in "${pids[@]}"; do wait "$pid"; done
+
+cat "$CHUNKDIR"/*.trf > "$WORK/trf_ngs.txt" 2>/dev/null || true
 
 if [ ! -s "$WORK/trf_ngs.txt" ]; then
   echo "TRF produced no output — check trf is installed and the assembly path is correct." >&2
