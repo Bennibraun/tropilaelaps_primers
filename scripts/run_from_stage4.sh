@@ -3,8 +3,31 @@
 # its output already exists, so a killed run can be restarted without redoing work.
 set -euo pipefail
 
-# Run from the repo root regardless of where this is invoked from.
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Locate the repo root.
+#
+# BASH_SOURCE alone is not enough: under `sbatch`, Slurm copies the script to a
+# spool dir and runs it from there, so BASH_SOURCE resolves to something like
+# /tmp/slurmd/job*/slurm_script and REPO would become /tmp/slurmd (which you do
+# not own -- the failure shows up as "mkdir: cannot create directory
+# '/tmp/slurmd/logs': Permission denied").
+#
+# Order: explicit $TROPI_REPO, then Slurm's submit dir, then the script's own
+# location, then the current directory -- taking the first that looks like the
+# repo (has scripts/04_copy_number_ranking.py).
+_looks_like_repo() { [ -f "$1/scripts/04_copy_number_ranking.py" ]; }
+
+REPO=""
+for _cand in "${TROPI_REPO:-}" \
+             "${SLURM_SUBMIT_DIR:-}" \
+             "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)" \
+             "$PWD"; do
+  if [ -n "$_cand" ] && _looks_like_repo "$_cand"; then REPO="$_cand"; break; fi
+done
+if [ -z "$REPO" ]; then
+  echo "Cannot locate the repo root (no scripts/04_copy_number_ranking.py found)." >&2
+  echo "Run this from inside the repo, or set TROPI_REPO=/path/to/tropilaelaps_primers." >&2
+  exit 1
+fi
 cd "$REPO"
 
 # Activate the env only if it isn't already active and we can find a conda.
