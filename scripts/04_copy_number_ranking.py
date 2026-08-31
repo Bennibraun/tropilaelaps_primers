@@ -81,6 +81,15 @@ def build_self_blastdb(assembly, workdir):
 
 def blast_copies(candidates, db, workdir, threads):
     out = workdir / "self_hits.tsv"
+    # Reuse a completed hit table if one is already present and non-empty. BLAST
+    # is the fixed, expensive part of this stage (the loop is what we optimize
+    # with --top-n), so a restart after a killed/timed-out run should not redo it.
+    # To force a fresh BLAST, delete self_hits.tsv first.
+    if out.exists() and out.stat().st_size > 0:
+        print(f">> reusing existing BLAST hits: {out} "
+              f"({out.stat().st_size} bytes) — delete it to force a fresh run",
+              file=sys.stderr)
+        return out
     # -max_target_seqs caps hits per candidate. Without it, self-BLASTing a
     # repeat library against a repeat-rich genome is effectively quadratic: a
     # high-copy family matches thousands of loci, and an unbounded run produced a
