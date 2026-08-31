@@ -121,19 +121,34 @@ def align_and_find_core(copies_fasta, single_seq, workdir, cand_id):
     if n <= 1:
         return single_seq, 1.0
     aln_path = workdir / f"{cand_id}.aln.fasta"
-    run(["mafft", "--auto", "--quiet", str(copies_fasta)], stdout=open(aln_path, "w"))
+    # Fast, threaded alignment. `--auto` chooses an accurate but O(N^2 L^2)
+    # strategy (L-INS-i) for these repeat monomers, which is what made the
+    # per-candidate loop overrun the 11h wall silently. `--retree 1` pins the
+    # fast progressive method (FFT-NS-2); copies of one repeat family are near-
+    # identical, so the accurate refinement buys nothing here. THREADS honored.
+    threads = os.environ.get("THREADS", "4")
+    run(["mafft", "--retree", "1", "--thread", str(threads), "--quiet", str(copies_fasta)],
+        stdout=open(aln_path, "w"))
     aln = AlignIO.read(aln_path, "fasta")
     ncols = aln.get_alignment_length()
+
+    # Per column: agreement fraction AND the majority (consensus) base. We need
+    # the consensus base per column, not a single copy's base, so the reported
+    # core is genuinely conserved — see the core-extraction note below.
     agreement = []
+    consensus_bases = []
     for col in range(ncols):
         bases = [rec.seq[col].upper() for rec in aln if rec.seq[col] != "-"]
         if not bases:
             agreement.append(0.0)
+            consensus_bases.append("-")
             continue
         counts = defaultdict(int)
         for b in bases:
             counts[b] += 1
-        agreement.append(max(counts.values()) / len(bases))
+        top_base, top_count = max(counts.items(), key=lambda kv: kv[1])
+        agreement.append(top_count / len(bases))
+        consensus_bases.append(top_base)
 
     # longest run of columns meeting CORE_MIN_IDENTITY
     best_start, best_len, cur_start, cur_len = 0, 0, 0, 0
@@ -149,8 +164,11 @@ def align_and_find_core(copies_fasta, single_seq, workdir, cand_id):
     if best_len < CORE_MIN_LEN:
         return None, max(agreement) if agreement else 0.0
 
-    consensus_rec = aln[0]
-    core_seq = str(consensus_rec.seq[best_start:best_start + best_len]).replace("-", "")
+    # Core = column-wise CONSENSUS across the conserved window, NOT aln[0].
+    # Using aln[0] (one arbitrary copy) sliced by alignment columns could return
+    # bases where that copy disagrees with the family, letting primers sit on
+    # non-conserved positions. The consensus is the invariant target we want.
+    core_seq = "".join(consensus_bases[best_start:best_start + best_len]).replace("-", "")
     mean_ident = sum(agreement[best_start:best_start + best_len]) / best_len
     return core_seq, mean_ident
 
@@ -189,9 +207,15 @@ def main():
 
     rows = []
     core_records = []
-    for cand_id, length in lengths.items():
+    total = len(lengths)
+    for idx, (cand_id, length) in enumerate(lengths.items(), 1):
         copies = hits.get(cand_id, [])
         n_copies = len(copies)
+        # Progress so a long MSA loop is never a silent black box (the 11h
+        # timeout printed nothing after the blast line). Flush so tee/Slurm logs
+        # show it live.
+        print(f"[{idx}/{total}] {cand_id}: {n_copies} copies -> aligning core",
+              file=sys.stderr, flush=True)
         if n_copies == 0:
             rows.append({"candidate_id": cand_id, "n_copies": 0, "core_len": 0,
                          "core_identity": "", "note": "no self-hit (unique single-copy candidate)"})
