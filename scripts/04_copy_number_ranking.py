@@ -41,6 +41,16 @@ CORE_MIN_LEN = 20         # minimum core window length to bother reporting
 REQUIRED_TOOLS = ["makeblastdb", "blastn", "seqkit", "mafft"]
 
 
+def default_threads():
+    """Thread count from the Slurm allocation, else the machine's CPUs, else 4.
+    Under sbatch, $SLURM_CPUS_PER_TASK reflects `-c/--cpus-per-task`, so the job
+    uses exactly what it reserved without anyone exporting an env var."""
+    slurm = os.environ.get("SLURM_CPUS_PER_TASK")
+    if slurm and slurm.isdigit():
+        return int(slurm)
+    return os.cpu_count() or 4
+
+
 def check_tools():
     missing = [t for t in REQUIRED_TOOLS if shutil.which(t) is None]
     if missing:
@@ -69,7 +79,7 @@ def build_self_blastdb(assembly, workdir):
     return db
 
 
-def blast_copies(candidates, db, workdir):
+def blast_copies(candidates, db, workdir, threads):
     out = workdir / "self_hits.tsv"
     # -max_target_seqs caps hits per candidate. Without it, self-BLASTing a
     # repeat library against a repeat-rich genome is effectively quadratic: a
@@ -82,7 +92,7 @@ def blast_copies(candidates, db, workdir):
         "blastn", "-query", str(candidates), "-db", str(db),
         "-task", "blastn", "-word_size", "11",
         "-perc_identity", str(MIN_COPY_IDENT),
-        "-num_threads", os.environ.get("THREADS", "4"),
+        "-num_threads", str(threads),
         "-max_target_seqs", str(MAX_HITS_PER_CANDIDATE),
         "-dust", "yes",
         "-outfmt", "6 qseqid sseqid pident length qlen sstart send",
@@ -116,7 +126,7 @@ def write_bed_and_extract(cand_id, copies, assembly, workdir):
     return fasta
 
 
-def align_and_find_core(copies_fasta, single_seq, workdir, cand_id):
+def align_and_find_core(copies_fasta, single_seq, workdir, cand_id, threads):
     n = sum(1 for _ in open(copies_fasta) if _.startswith(">"))
     if n <= 1:
         return single_seq, 1.0
@@ -125,8 +135,7 @@ def align_and_find_core(copies_fasta, single_seq, workdir, cand_id):
     # strategy (L-INS-i) for these repeat monomers, which is what made the
     # per-candidate loop overrun the 11h wall silently. `--retree 1` pins the
     # fast progressive method (FFT-NS-2); copies of one repeat family are near-
-    # identical, so the accurate refinement buys nothing here. THREADS honored.
-    threads = os.environ.get("THREADS", "4")
+    # identical, so the accurate refinement buys nothing here.
     run(["mafft", "--retree", "1", "--thread", str(threads), "--quiet", str(copies_fasta)],
         stdout=open(aln_path, "w"))
     aln = AlignIO.read(aln_path, "fasta")
@@ -178,7 +187,18 @@ def main():
     ap.add_argument("assembly")
     ap.add_argument("candidates")
     ap.add_argument("--outdir", default="results/candidates")
+    ap.add_argument("--top-n", type=int, default=None,
+                    help="Run the expensive MSA/conserved-core step only on the "
+                         "top N candidates by copy number (BLAST-derived, cheap). "
+                         "The full copy-number table still covers all candidates; "
+                         "candidates outside the top N are marked 'core not computed "
+                         "(outside --top-n)'. Omit to process every candidate.")
+    ap.add_argument("--threads", type=int, default=default_threads(),
+                    help="Threads for blastn and mafft. Defaults to the Slurm "
+                         "allocation ($SLURM_CPUS_PER_TASK) if set, else the CPU "
+                         "count, else 4.")
     args = ap.parse_args()
+    threads = str(args.threads)
 
     check_tools()
     assembly = Path(args.assembly)
@@ -202,8 +222,26 @@ def main():
     print(">> building self-blastdb from assembly", file=sys.stderr)
     db = build_self_blastdb(assembly, workdir)
     print(">> mapping candidates back onto the assembly", file=sys.stderr)
-    hits_path = blast_copies(candidates, db, workdir)
+    hits_path = blast_copies(candidates, db, workdir, threads)
     hits = parse_hits(hits_path)
+
+    # Copy number is BLAST-derived and cheap, so compute it for ALL candidates
+    # first. The expensive part (per-candidate MAFFT + core) is what blew the
+    # wall clock, so when --top-n is set we run it only on the highest-copy
+    # families — which is exactly what a high-copy PCR target needs anyway.
+    copy_counts = {cid: len(hits.get(cid, [])) for cid in lengths}
+    if args.top_n is not None:
+        # candidates with >=1 copy, most copies first; ties broken by longer candidate
+        ranked_ids = sorted(
+            (cid for cid in lengths if copy_counts[cid] > 0),
+            key=lambda cid: (-copy_counts[cid], -lengths[cid]),
+        )
+        selected = set(ranked_ids[:args.top_n])
+        print(f">> --top-n {args.top_n}: running MSA/core on {len(selected)} of "
+              f"{len(lengths)} candidates (highest copy number); "
+              f"copy-number table still covers all.", file=sys.stderr)
+    else:
+        selected = None  # process everything
 
     rows = []
     core_records = []
@@ -214,7 +252,7 @@ def main():
         # Progress so a long MSA loop is never a silent black box (the 11h
         # timeout printed nothing after the blast line). Flush so tee/Slurm logs
         # show it live.
-        print(f"[{idx}/{total}] {cand_id}: {n_copies} copies -> aligning core",
+        print(f"[{idx}/{total}] {cand_id}: {n_copies} copies",
               file=sys.stderr, flush=True)
         if n_copies == 0:
             rows.append({"candidate_id": cand_id, "n_copies": 0, "core_len": 0,
@@ -222,8 +260,15 @@ def main():
             core_records.append((cand_id, seqs[cand_id]))
             continue
 
+        # Skip the expensive core step for candidates outside the top-N, but keep
+        # their copy count in the table so nothing is silently dropped.
+        if selected is not None and cand_id not in selected:
+            rows.append({"candidate_id": cand_id, "n_copies": n_copies, "core_len": 0,
+                         "core_identity": "", "note": "core not computed (outside --top-n)"})
+            continue
+
         copies_fasta = write_bed_and_extract(cand_id, copies, assembly, workdir)
-        core_seq, core_ident = align_and_find_core(copies_fasta, seqs[cand_id], workdir, cand_id)
+        core_seq, core_ident = align_and_find_core(copies_fasta, seqs[cand_id], workdir, cand_id, threads)
         if core_seq is None:
             rows.append({"candidate_id": cand_id, "n_copies": n_copies, "core_len": 0,
                          "core_identity": f"{core_ident:.3f}",
