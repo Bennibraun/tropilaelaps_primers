@@ -7,8 +7,11 @@ GC 40-60%, avoid homopolymer runs/hairpins. Also designs an internal oligo
 decision — no assay format is foreclosed, so we flag a probe candidate even
 though the format isn't chosen yet.
 
-If a core is too short for a 70-150bp product with flanking primers, primer3
-simply returns zero pairs for it and it's skipped — no special-casing needed.
+If a core is too short to hold the minimum product, it is skipped BEFORE calling
+primer3: primer3 raises (OSError: SEQUENCE_INCLUDED_REGION length < min
+PRIMER_PRODUCT_SIZE_RANGE) on such templates rather than returning zero pairs, so
+the short satellite cores common here would otherwise abort the whole run. See
+MIN_PRODUCT below.
 
 Usage:
     scripts/05_primer_design.py results/candidates/conserved_cores.fasta
@@ -66,9 +69,27 @@ def read_fasta(path):
         yield name, "".join(seq)
 
 
+# Smallest product primer3 is asked to make, taken from the size ranges so it
+# stays in sync with GLOBAL_ARGS. A template shorter than this cannot possibly
+# hold a product, and primer3 RAISES (OSError: SEQUENCE_INCLUDED_REGION length <
+# min PRIMER_PRODUCT_SIZE_RANGE) rather than returning zero pairs — which would
+# abort the whole run on the first short satellite core. So we skip these
+# ourselves. Many conserved cores are short satellite monomers (stage 4's
+# CORE_MIN_LEN is only 20bp), so this is the common case, not an edge case.
+MIN_PRODUCT = min(lo for lo, _hi in GLOBAL_ARGS["PRIMER_PRODUCT_SIZE_RANGE"])
+
+
 def design_for_candidate(cand_id, seq):
+    if len(seq) < MIN_PRODUCT:
+        return []  # too short for any product; skip (see MIN_PRODUCT note)
     seq_args = {"SEQUENCE_ID": cand_id, "SEQUENCE_TEMPLATE": seq}
-    result = primer3.bindings.design_primers(seq_args, GLOBAL_ARGS)
+    try:
+        result = primer3.bindings.design_primers(seq_args, GLOBAL_ARGS)
+    except OSError as e:
+        # A single pathological core must never kill the whole stage. Report and
+        # skip it so the remaining candidates still get designed.
+        print(f"  [skip] {cand_id} (len {len(seq)}): primer3 error: {e}", file=sys.stderr)
+        return []
     n = result.get("PRIMER_PAIR_NUM_RETURNED", 0)
     rows = []
     for i in range(n):
