@@ -85,20 +85,64 @@ if [ "$n_pairs" -eq 0 ]; then
 fi
 echo ">> $n_pairs primer pairs to validate"
 
-to_2bit() {
-  local fasta="$1"
+# --- chunk-aware isPcr -------------------------------------------------------
+# This isPcr build has a CUMULATIVE genome-size ceiling: a single .2bit above
+# ~552Mb overflows its coordinate binning and dies with
+#   "start 0, end 0 out of range in findBin (max is 512M)".
+# Verified empirically: 552Mb and 128Mb subsets run clean, the full 680Mb
+# assembly crashes, and no single scaffold exceeds 10Mb (so it is genuinely the
+# TOTAL, not any one sequence). glibc 2.17 (CentOS 7) rules out a newer 64-bit
+# build, so we partition any oversized genome into sub-ceiling bins of WHOLE
+# scaffolds, run isPcr per bin, and concatenate the PSLs. Whole-scaffold bins
+# mean no amplicon can straddle a bin boundary (our products are <=300bp; the
+# smallest scaffolds are 1kb), and PSL coordinates are per-scaffold so merging
+# needs no offset arithmetic.
+MAX_2BIT_MB="${MAX_2BIT_MB:-450}"   # safe cap under the observed ~552Mb ceiling
+
+# Run isPcr on one FASTA (chunking if over the cap) -> merged data-row PSL at $2.
+ispcr_genome() {
+  local fasta="$1" out_psl="$2"
   local name; name="$(basename "${fasta%.*}")"
-  local twobit="$WORK/2bit/${name}.2bit"
-  [ -f "$twobit" ] || faToTwoBit "$fasta" "$twobit" >/dev/null
-  echo "$twobit"
+  local total_mb; total_mb=$(seqkit stats -T "$fasta" | awk 'NR==2{printf "%d", $5/1000000}')
+
+  if [ "$total_mb" -le "$MAX_2BIT_MB" ]; then
+    local tb="$WORK/2bit/${name}.2bit"
+    [ -f "$tb" ] || faToTwoBit "$fasta" "$tb" >/dev/null
+    isPcr "$tb" "$PRIMER_FILE" "$WORK/${name}.psl" -out=psl -maxSize="$MAX_SIZE"
+    awk '$1 ~ /^[0-9]+$/' "$WORK/${name}.psl" > "$out_psl"
+    echo "   ($name: ${total_mb}Mb, 1 chunk)" >&2
+    return
+  fi
+
+  # Oversized: split scaffolds into bins <= MAX_2BIT_MB by greedy packing.
+  local chunkdir="$WORK/chunks/${name}"
+  mkdir -p "$chunkdir"
+  # names + lengths, assign each scaffold to a bin whose running total stays
+  # under the cap; write one scaffold-name list per bin.
+  seqkit fx2tab -nl "$fasta" | awk -v CAP="$((MAX_2BIT_MB*1000000))" -v D="$chunkdir" '
+    BEGIN { bin=0; sum=0 }
+    { if (sum+$2 > CAP && sum>0) { bin++; sum=0 }
+      print $1 > (D"/bin"bin".ids"); sum+=$2 }
+    END { print bin+1 }' > "$chunkdir/_nbins"
+  local nbins; nbins=$(cat "$chunkdir/_nbins")
+  echo "   ($name: ${total_mb}Mb -> $nbins chunks of <= ${MAX_2BIT_MB}Mb)" >&2
+
+  : > "$out_psl"
+  local b
+  for idlist in "$chunkdir"/bin*.ids; do
+    b="$(basename "${idlist%.ids}")"
+    seqkit grep -f "$idlist" "$fasta" > "$chunkdir/$b.fa"
+    faToTwoBit "$chunkdir/$b.fa" "$chunkdir/$b.2bit" >/dev/null
+    isPcr "$chunkdir/$b.2bit" "$PRIMER_FILE" "$chunkdir/$b.psl" -out=psl -maxSize="$MAX_SIZE"
+    awk '$1 ~ /^[0-9]+$/' "$chunkdir/$b.psl" >> "$out_psl"
+  done
 }
 
 echo ">> isPcr vs target assembly (must amplify)"
-target_2bit="$(to_2bit "$TARGET")"
-isPcr "$target_2bit" "$PRIMER_FILE" "$WORK/target_hits.psl" -out=psl -maxSize="$MAX_SIZE"
-# PSL output has a 5-line header block; filter to data rows only (col 1 = match
-# count, always numeric on a real row) rather than assuming a fixed line count.
-awk '$1 ~ /^[0-9]+$/ { print $10 }' "$WORK/target_hits.psl" | sort -u > "$WORK/amplifies_target.txt"
+ispcr_genome "$TARGET" "$WORK/target_hits.psl"
+# PSL col 10 = qName = the primer-pair name (one row per amplicon it produces).
+# Data rows are already filtered by ispcr_genome, so no header-skipping needed.
+awk '{ print $10 }' "$WORK/target_hits.psl" | sort -u > "$WORK/amplifies_target.txt"
 
 # --- on-target product COUNT per pair ---
 # A pair sitting on a high-copy repeat can prime at many loci in the right
@@ -106,7 +150,8 @@ awk '$1 ~ /^[0-9]+$/ { print $10 }' "$WORK/target_hits.psl" | sort -u > "$WORK/a
 # qPCR quantification. High copy number helps sensitivity but hurts assay
 # cleanliness, so count products rather than just checking the pair amplifies.
 #   1 product = clean/ideal | 2-5 = tolerable for presence/absence | >5 = smear risk
-awk '$1 ~ /^[0-9]+$/ { print $10 }' "$WORK/target_hits.psl" \
+# target_hits.psl is already filtered to data rows by ispcr_genome; col 10 = pair.
+awk '{ print $10 }' "$WORK/target_hits.psl" \
   | sort | uniq -c | awk '{ print $2"\t"$1 }' | sort -k2,2nr > "$WORK/target_product_counts.tsv"
 awk -F'\t' '$2==1{a++} $2>=2&&$2<=5{b++} $2>5{c++} END{
   printf "   on-target products: %d pairs=1 (clean) | %d pairs=2-5 | %d pairs>5 (smear risk)\n", a+0,b+0,c+0 }' \
@@ -116,9 +161,8 @@ awk -F'\t' '$2==1{a++} $2>=2&&$2<=5{b++} $2>5{c++} END{
 for ref in "${OFFTARGETS[@]}"; do
   name="$(basename "${ref%.*}")"
   echo ">> isPcr vs off-target: $name (must amplify nothing)"
-  twobit="$(to_2bit "$ref")"
-  isPcr "$twobit" "$PRIMER_FILE" "$WORK/${name}_hits.psl" -out=psl -maxSize="$MAX_SIZE"
-  awk -v n="$name" '$1 ~ /^[0-9]+$/ { print n"\t"$10 }' "$WORK/${name}_hits.psl" >> "$WORK/offtarget_hits.tsv"
+  ispcr_genome "$ref" "$WORK/${name}_hits.psl"   # chunk-aware; data-row PSL
+  awk -v n="$name" '{ print n"\t"$10 }' "$WORK/${name}_hits.psl" >> "$WORK/offtarget_hits.tsv"
 done
 cut -f2 "$WORK/offtarget_hits.tsv" | sort -u > "$WORK/hits_any_offtarget.txt"
 
