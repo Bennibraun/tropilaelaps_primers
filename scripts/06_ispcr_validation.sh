@@ -44,11 +44,15 @@ awk -F'\t' 'NR>1 { print $1"_pair"$2"\t"$3"\t"$6 }' "$PRIMERS" > "$PRIMER_FILE_A
 # full-length occurrences via blastn (fast, threaded, reuses stage-4 DB) and drop
 # any pair whose fwd OR rev exceeds MAX_PRIMER_SITES. Rejects are logged with
 # counts — nothing is silently discarded.
-# Default 500: from the observed hit distribution this keeps single- through
-# high-copy targets (~560 pairs) while dropping the smear/crash zone (>500 sites,
-# incl. all the >2000-site pairs that overflow isPcr's coordinate bin). Override
-# via the MAX_PRIMER_SITES env var (e.g. 100 for cleaner single-product assays).
-MAX_PRIMER_SITES="${MAX_PRIMER_SITES:-500}"
+# NOTE on the count vs. what isPcr actually sees: blastn here counts PERFECT
+# FULL-LENGTH primer occurrences, but isPcr triggers an alignment on an 11-mer
+# tile (default -tileSize=11) and only requires a 15bp perfect 3' match
+# (-minPerfect). So isPcr enumerates from MANY more seed sites than this count,
+# and pairs near the threshold can still explode into a huge fwd/rev product
+# search. This prefilter is a coarse guard, NOT the primary crash fix — the .ooc
+# over-used-tile mask below is. Default 150 keeps single- through moderate-copy
+# targets while dropping the dense-repeat pairs. Override via MAX_PRIMER_SITES.
+MAX_PRIMER_SITES="${MAX_PRIMER_SITES:-150}"
 DB="data/interim/copy_number/assembly_db"
 if [ ! -f "${DB}.nsq" ]; then
   DB="$WORK/target_blastdb"
@@ -85,57 +89,56 @@ if [ "$n_pairs" -eq 0 ]; then
 fi
 echo ">> $n_pairs primer pairs to validate"
 
-# --- chunk-aware isPcr -------------------------------------------------------
-# This isPcr build has a CUMULATIVE genome-size ceiling: a single .2bit above
-# ~552Mb overflows its coordinate binning and dies with
-#   "start 0, end 0 out of range in findBin (max is 512M)".
-# Verified empirically: 552Mb and 128Mb subsets run clean, the full 680Mb
-# assembly crashes, and no single scaffold exceeds 10Mb (so it is genuinely the
-# TOTAL, not any one sequence). glibc 2.17 (CentOS 7) rules out a newer 64-bit
-# build, so we partition any oversized genome into sub-ceiling bins of WHOLE
-# scaffolds, run isPcr per bin, and concatenate the PSLs. Whole-scaffold bins
-# mean no amplicon can straddle a bin boundary (our products are <=300bp; the
-# smallest scaffolds are 1kb), and PSL coordinates are per-scaffold so merging
-# needs no offset arithmetic.
-MAX_2BIT_MB="${MAX_2BIT_MB:-450}"   # safe cap under the observed ~552Mb ceiling
+# --- isPcr with an over-used-tile (.ooc) mask --------------------------------
+# The crash this stage kept hitting —
+#   "start 0, end 0 out of range in findBin (max is 512M)"
+# — is NOT a genome-size ceiling. findBin's 512Mb limit is on a SINGLE feature's
+# end coordinate; the largest scaffold here is ~10Mb and a 449Mb sub-chunk still
+# crashed, so total size was never the cause. The real trigger is amplicon
+# enumeration blowing up over a repeat-dense genome: isPcr seeds an alignment at
+# every 11bp tile (-tileSize=11) needing only a 15bp perfect 3' match, so
+# satellite tiles spawn a combinatorial fwd/rev product search whose coordinate
+# arithmetic collapses to the 0,0 interval that trips findBin.
+#
+# The intended isPcr mechanism for exactly this is an .ooc "over-used tile" file:
+# tiles occurring more than -repMatch times are ignored as seeds, which is how
+# UCSC runs isPcr/BLAT against whole genomes. We build one per genome from the
+# genome itself (makeOoc needs the complete genome, which is what we pass) and
+# feed it to every isPcr call. This removes the repeat-driven enumeration at the
+# source, so no genome-size chunking is needed.
+REP_MATCH="${REP_MATCH:-1024}"   # isPcr default for tileSize 11; lower = mask more repeats
 
-# Run isPcr on one FASTA (chunking if over the cap) -> merged data-row PSL at $2.
+# Run isPcr on one whole FASTA (single 2bit, .ooc-masked) -> data-row PSL at $2.
 ispcr_genome() {
   local fasta="$1" out_psl="$2"
   local name; name="$(basename "${fasta%.*}")"
   local total_mb; total_mb=$(seqkit stats -T "$fasta" | awk 'NR==2{printf "%d", $5/1000000}')
 
-  if [ "$total_mb" -le "$MAX_2BIT_MB" ]; then
-    local tb="$WORK/2bit/${name}.2bit"
-    [ -f "$tb" ] || faToTwoBit "$fasta" "$tb" >/dev/null
-    isPcr "$tb" "$PRIMER_FILE" "$WORK/${name}.psl" -out=psl -maxSize="$MAX_SIZE"
-    awk '$1 ~ /^[0-9]+$/' "$WORK/${name}.psl" > "$out_psl"
-    echo "   ($name: ${total_mb}Mb, 1 chunk)" >&2
-    return
+  local tb="$WORK/2bit/${name}.2bit"
+  [ -f "$tb" ] || faToTwoBit "$fasta" "$tb" >/dev/null
+
+  # Build the over-used-tile mask once per genome. makeOoc requires three
+  # positional args (database query output) but exits after reading only the
+  # database, so the /dev/null query/output are never opened. The .ooc bakes in
+  # tileSize (default 11), which must match the search below — both use the
+  # default, so they agree.
+  local ooc="$WORK/2bit/${name}.ooc"
+  if [ ! -f "$ooc" ]; then
+    isPcr "$tb" /dev/null /dev/null -makeOoc="$ooc" -repMatch="$REP_MATCH" >/dev/null 2>&1 \
+      || echo "   ($name: warning — makeOoc failed, running without .ooc mask)" >&2
   fi
 
-  # Oversized: split scaffolds into bins <= MAX_2BIT_MB by greedy packing.
-  local chunkdir="$WORK/chunks/${name}"
-  mkdir -p "$chunkdir"
-  # names + lengths, assign each scaffold to a bin whose running total stays
-  # under the cap; write one scaffold-name list per bin.
-  seqkit fx2tab -nl "$fasta" | awk -v CAP="$((MAX_2BIT_MB*1000000))" -v D="$chunkdir" '
-    BEGIN { bin=0; sum=0 }
-    { if (sum+$2 > CAP && sum>0) { bin++; sum=0 }
-      print $1 > (D"/bin"bin".ids"); sum+=$2 }
-    END { print bin+1 }' > "$chunkdir/_nbins"
-  local nbins; nbins=$(cat "$chunkdir/_nbins")
-  echo "   ($name: ${total_mb}Mb -> $nbins chunks of <= ${MAX_2BIT_MB}Mb)" >&2
-
-  : > "$out_psl"
-  local b
-  for idlist in "$chunkdir"/bin*.ids; do
-    b="$(basename "${idlist%.ids}")"
-    seqkit grep -f "$idlist" "$fasta" > "$chunkdir/$b.fa"
-    faToTwoBit "$chunkdir/$b.fa" "$chunkdir/$b.2bit" >/dev/null
-    isPcr "$chunkdir/$b.2bit" "$PRIMER_FILE" "$chunkdir/$b.psl" -out=psl -maxSize="$MAX_SIZE"
-    awk '$1 ~ /^[0-9]+$/' "$chunkdir/$b.psl" >> "$out_psl"
-  done
+  # (empty-array expansion under `set -u` throws on the cluster's older bash,
+  # so pass the .ooc flag by conditional, not an array splat.)
+  if [ -f "$ooc" ]; then
+    isPcr "$tb" "$PRIMER_FILE" "$WORK/${name}.psl" \
+      -out=psl -maxSize="$MAX_SIZE" -ooc="$ooc"
+  else
+    isPcr "$tb" "$PRIMER_FILE" "$WORK/${name}.psl" \
+      -out=psl -maxSize="$MAX_SIZE"
+  fi
+  awk '$1 ~ /^[0-9]+$/' "$WORK/${name}.psl" > "$out_psl"
+  echo "   ($name: ${total_mb}Mb, ooc-masked)" >&2
 }
 
 echo ">> isPcr vs target assembly (must amplify)"
