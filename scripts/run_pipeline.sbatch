@@ -7,10 +7,10 @@
 #SBATCH --output=logs/%x_%j.log
 #
 # Runs the rest of the pipeline as ONE batch job (never on the login node).
-# run_from_stage4.sh skips any stage whose output already exists, so with stage 4
-# done it proceeds 5 -> 6 -> 5L -> 6L. Stage 6L (BLAST of every LAMP oligo
-# component vs all off-target genomes) is the heaviest; the -c 8 / 24G / 4h
-# sizing is set for it, comfortably inside the `short` partition (<=11h).
+# run_pipeline.sh skips any stage whose output already exists, so with stage 4
+# done it proceeds 5 -> 6 -> 5L -> 6L -> 7 (report). Stage 6L (BLAST of every
+# LAMP oligo component vs all off-target genomes) is the heaviest; the -c 8 /
+# 24G / 4h sizing is set for it, comfortably inside the `short` partition (<=11h).
 #
 # Submit from the repo root:  sbatch scripts/run_pipeline.sbatch
 set -euo pipefail
@@ -31,4 +31,4 @@ export THREADS="${SLURM_CPUS_PER_TASK:-8}"
 # congener markers (T_clareae_markers.fasta) are intentionally NOT in the *.fna
 # glob — they are mito fragments, not a genome, so isPcr/BLAST validation skips
 # them by design. Expect exactly 4 off-target lines in the stage 6 and 6L logs.
-./scripts/run_from_stage4.sh
+./scripts/run_pipeline.sh

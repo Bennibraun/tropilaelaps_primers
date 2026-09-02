@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
-# Resume the pipeline from stage 4. Re-running is safe: each stage is skipped if
-# its output already exists, so a killed run can be restarted without redoing work.
+# Run the pipeline from stage 4 (copy-number ranking) through stage 6L (LAMP
+# specificity validation) plus the stage 7 report. Stages 0-3 are NOT included:
+# stage 2 needs an externally-generated RepeatModeler file as an argument, and
+# stage 3's disqualification thresholds (see 03c_recut.sh) are a judgment call
+# meant to be inspected via offtarget_summary.tsv, not baked into a resumable
+# loop. Run those by hand first; this script picks up once
+# results/candidates/unique_candidates.fasta exists.
+#
+# Re-running is safe: each stage is skipped if its output already exists, so a
+# killed run can be restarted without redoing work. Delete a stage's output
+# file to force it to rerun.
 set -euo pipefail
 
 # Locate the repo root.
@@ -61,6 +70,14 @@ mkdir -p "$R" data/interim
 ts() { date '+%H:%M:%S'; }
 have() { [ -s "$1" ]; }
 
+if ! have "$R/unique_candidates.fasta"; then
+  echo "Missing $R/unique_candidates.fasta -- run stages 0-3 first" \
+       "(scripts/00_fetch_references.sh, 01_assembly_qc.sh, 02_repeat_discovery.sh," \
+       "03_specificity_screen.sh, and 03c_recut.sh if you want a non-default" \
+       "disqualification threshold)." >&2
+  exit 1
+fi
+
 if have "$R/conserved_cores.fasta"; then
   echo "[$(ts)] STAGE 4: skipped (conserved_cores.fasta exists)"
 else
@@ -79,7 +96,7 @@ if have "$R/validated_primers.tsv"; then
   echo "[$(ts)] STAGE 6: skipped (validated_primers.tsv exists)"
 else
   echo "[$(ts)] STAGE 6: in-silico PCR validation"
-  ./scripts/06_ispcr_validation.sh "$R/primers.tsv" data/raw/tropi_assembly.fasta data/reference/*.fna 2>&1 | tee "$LOG/stage06.log"
+  ./scripts/06_pcr_validation_v2.py "$R/primers.tsv" data/raw/tropi_assembly.fasta data/reference/*.fna 2>&1 | tee "$LOG/stage06.log"
 fi
 
 if have "$R/lamp_primers.tsv"; then
@@ -96,6 +113,10 @@ else
   ./scripts/06L_lamp_validation.py "$R/lamp_primers.tsv" data/raw/tropi_assembly.fasta data/reference/*.fna 2>&1 | tee "$LOG/stage06L.log"
 fi
 
+echo "[$(ts)] STAGE 7: report"
+./scripts/07_report.py --candidates-dir "$R" --out results/report.md 2>&1 | tee "$LOG/stage07.log"
+
 echo "[$(ts)] DONE. Results in $REPO/results/candidates/"
-echo "  PCR  : primers.tsv -> validated_primers.tsv"
-echo "  LAMP : lamp_primers.tsv -> lamp_validated.tsv (+ lamp_rejected.tsv)"
+echo "  PCR    : primers.tsv -> validated_primers.tsv"
+echo "  LAMP   : lamp_primers.tsv -> lamp_validated.tsv (+ lamp_rejected.tsv)"
+echo "  REPORT : results/report.md"
