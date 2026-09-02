@@ -99,6 +99,23 @@ else
   ./scripts/06_pcr_validation_v2.py "$R/primers.tsv" data/raw/tropi_assembly.fasta data/reference/*.fna 2>&1 | tee "$LOG/stage06.log"
 fi
 
+# Independent (non-BLAST) verification of the shortlist: literal + fuzzy
+# (edit-distance<=2) occurrence counts, computed directly from the genome
+# FASTA text rather than trusted from BLAST's alignment scoring. Scoped to
+# the PASS shortlist (validated_primers.tsv), not the full primer set --
+# fuzzy matching costs real CPU time per primer per genome, see the script's
+# docstring. A validated_primers.tsv with zero PASS rows (header only) is
+# expected when nothing passed stage 6, not an error -- skip cleanly.
+INDEPENDENT_TSV="data/interim/pcr_validation/independent_verification.tsv"
+if have "$INDEPENDENT_TSV"; then
+  echo "[$(ts)] STAGE 6b: skipped (independent_verification.tsv exists)"
+elif [ "$(wc -l < "$R/validated_primers.tsv" 2>/dev/null || echo 0)" -le 1 ]; then
+  echo "[$(ts)] STAGE 6b: skipped (no PASS pairs in validated_primers.tsv)"
+else
+  echo "[$(ts)] STAGE 6b: independent (non-BLAST) verification of the shortlist"
+  ./scripts/06b_independent_verify.py "$R/validated_primers.tsv" data/raw/tropi_assembly.fasta data/reference/*.fna -o "$INDEPENDENT_TSV" 2>&1 | tee "$LOG/stage06b.log"
+fi
+
 if have "$R/lamp_primers.tsv"; then
   echo "[$(ts)] STAGE 5L: skipped (lamp_primers.tsv exists)"
 else

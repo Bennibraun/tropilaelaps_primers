@@ -9,6 +9,7 @@ dependencies:
   - bedtools
   - python>=3.11
   - biopython
+  - regex             # fuzzy/approximate substring matching — scripts/06b (independent verification)
 
   # --- repeat / satellite discovery ---
   # RepeatModeler is NOT run by this repo (it's one of the heaviest/most fragile

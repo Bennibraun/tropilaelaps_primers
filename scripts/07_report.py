@@ -13,11 +13,17 @@ results/candidates/ and produces one Markdown report with:
     close but didn't make it
   - per-candidate off-target hit counts, broken out by genome, so you can
     see *which* off-target genome (if any) came close
+  - independent (non-BLAST) verification counts for the shortlist, from
+    stage 6b: literal-substring and fuzzy (edit-distance<=2) occurrence
+    counts computed directly from the genome FASTA text, per pair per
+    genome (target and every off-target). This is the "don't trust BLAST,
+    show me the sequence is actually there" check.
 
-This script does not re-run BLAST or primer3. It only reads the TSVs
-stages 4-6 already wrote. If a file is missing, that section is skipped
-with a note rather than the whole report failing -- useful if you're
-generating a report mid-pipeline (e.g. LAMP stages not run).
+This script does not re-run BLAST, primer3, or the stage 6b scan. It only
+reads the TSVs stages 4-6b already wrote. If a file is missing, that
+section is skipped with a note rather than the whole report failing --
+useful if you're generating a report mid-pipeline (e.g. LAMP stages not
+run, or stage 6b not run yet).
 
 Usage
 -----
@@ -28,8 +34,9 @@ Inputs (all optional; missing ones are noted, not fatal)
 results/candidates/ranked_candidates.tsv       (stage 4)
 results/candidates/primers.tsv                 (stage 5)
 results/candidates/validated_primers.tsv       (stage 6)
-data/interim/pcr_validation/rejection_summary.tsv   (stage 6, all pairs incl. rejects)
-data/interim/pcr_validation/offtarget_products.tsv  (stage 6, per-genome detail)
+data/interim/pcr_validation/rejection_summary.tsv          (stage 6, all pairs incl. rejects)
+data/interim/pcr_validation/offtarget_products.tsv         (stage 6, per-genome detail)
+data/interim/pcr_validation/independent_verification.tsv   (stage 6b, non-BLAST counts)
 
 Output
 ------
@@ -153,6 +160,7 @@ def main():
     validated_pass = read_tsv(cdir / "validated_primers.tsv")
     validated_all = read_tsv(wdir / "rejection_summary.tsv")
     offtarget_products = read_tsv(wdir / "offtarget_products.tsv")
+    independent = read_tsv(wdir / "independent_verification.tsv")
 
     ranked_by_id = {r["candidate_id"]: r for r in ranked} if ranked else {}
 
@@ -189,6 +197,57 @@ def main():
                 "_sort_identity": float(cand["core_identity"]) if cand.get("core_identity") not in (None, "") else -1,
             })
         shortlist_rows.sort(key=lambda r: (-r["_sort_copies"], -r["_sort_identity"]))
+
+    # ------------------------------------------------------------------
+    # Independent verification (stage 6b): pivot the long-format TSV
+    # (pair_name, primer_type, genome, exact_hits, fuzzy_hits_ed2) into one
+    # row per pair, with F/R and target/off-target counts side by side.
+    # Off-target genomes vary run to run, so their columns are discovered
+    # from the data rather than hardcoded.
+    # ------------------------------------------------------------------
+    independent_rows = []
+    offtarget_genome_labels = []
+    if independent:
+        by_pair = defaultdict(dict)  # pair_name -> (primer_type, genome) -> row
+        genomes_seen = []
+        for row in independent:
+            key = (row["primer_type"], row["genome"])
+            by_pair[row["pair_name"]][key] = row
+            if row["genome"] not in genomes_seen:
+                genomes_seen.append(row["genome"])
+
+        target_genomes = [g for g in genomes_seen if g.startswith("target:")]
+        offtarget_genomes = [g for g in genomes_seen if g.startswith("offtarget:")]
+        offtarget_genome_labels = [g.split(":", 1)[1] for g in offtarget_genomes]
+
+        def hits_cell(pair_data, primer_type, genome):
+            r = pair_data.get((primer_type, genome))
+            if r is None:
+                return "-"
+            return f"{r['exact_hits']} exact / {r['fuzzy_hits_ed2']} fuzzy(≤ed2)"
+
+        for pair_name, pair_data in by_pair.items():
+            row = {"pair_name": pair_name}
+            for tg in target_genomes:
+                label = tg.split(":", 1)[1]
+                row[f"target_F"] = hits_cell(pair_data, "F", tg)
+                row[f"target_R"] = hits_cell(pair_data, "R", tg)
+            worst_off_exact = 0
+            worst_off_genome = ""
+            for og, label in zip(offtarget_genomes, offtarget_genome_labels):
+                f_exact = int(pair_data.get(("F", og), {}).get("exact_hits", 0) or 0)
+                r_exact = int(pair_data.get(("R", og), {}).get("exact_hits", 0) or 0)
+                combined = max(f_exact, r_exact)
+                if combined > worst_off_exact:
+                    worst_off_exact = combined
+                    worst_off_genome = label
+                row[f"off_{label}_F"] = hits_cell(pair_data, "F", og)
+                row[f"off_{label}_R"] = hits_cell(pair_data, "R", og)
+            row["_worst_off_exact"] = worst_off_exact
+            row["_worst_off_genome"] = worst_off_genome
+            independent_rows.append(row)
+
+        independent_rows.sort(key=lambda r: r["pair_name"])
 
     # ------------------------------------------------------------------
     # Near-misses: pairs that DID amplify the target (target_products >= 1)
@@ -251,6 +310,53 @@ def main():
                       "See the near-miss table below for what came closest.")
     lines.append("")
 
+    lines.append("## Independent verification (non-BLAST occurrence counts)")
+    lines.append("")
+    if independent_rows:
+        lines.append(
+            "Computed by `scripts/06b_independent_verify.py` directly against the raw "
+            "genome FASTA text (unwrapped, both strands) -- no BLAST alignment scoring "
+            "involved. `exact` = literal substring match, 0 mismatches. "
+            "`fuzzy(≤ed2)` = matches within edit distance 2 (substitutions, "
+            "insertions, or deletions combined), the same error budget stage 6's BLAST "
+            "step allows. A candidate you can trust should show fuzzy counts on the "
+            "target genome in the same ballpark as BLAST's `target_f_sites`/"
+            "`target_r_sites` (see the shortlist table above), and 0 exact hits "
+            "everywhere in the off-target genomes below."
+        )
+        lines.append("")
+
+        columns = ["pair_name", "target_F", "target_R"]
+        headers = ["pair", "target: fwd primer", "target: rev primer"]
+        for label in offtarget_genome_labels:
+            columns += [f"off_{label}_F", f"off_{label}_R"]
+            headers += [f"{label}: fwd primer", f"{label}: rev primer"]
+
+        lines.append(md_table(independent_rows, columns=columns, headers=headers))
+        lines.append("")
+
+        flagged = [r for r in independent_rows if r["_worst_off_exact"] > 0]
+        if flagged:
+            lines.append(
+                f"**Flagged:** {len(flagged)} pair(s) above have at least one EXACT "
+                f"primer match in an off-target genome despite passing BLAST-based "
+                f"stage 6 (which allows up to 2 mismatches, so a perfect match can "
+                f"still sit under its identity threshold in some configurations, or "
+                f"stage 6 was run with different thresholds than this scan). "
+                f"Re-check these by hand before ordering:"
+            )
+            for r in flagged:
+                lines.append(f"  - `{r['pair_name']}`: exact off-target match in {r['_worst_off_genome']}")
+            lines.append("")
+    else:
+        lines.append(
+            "Not found — run `scripts/06b_independent_verify.py` on "
+            "`validated_primers.tsv` to populate this section. This check does not "
+            "trust BLAST's alignment/scoring; it counts literal and near-literal "
+            "occurrences of each primer directly in the genome text."
+        )
+    lines.append("")
+
     lines.append("## Near misses (amplified target, rejected for another reason)")
     lines.append("")
     if near_miss_rows:
@@ -273,9 +379,19 @@ def main():
     )
     lines.append(
         "- `target_products` / off-target counts come from stage 6 in-silico PCR "
-        "(BLASTN-short + explicit product enumeration). This is a computational "
-        "prediction, not a wet-lab result — see the validation guidance below "
-        "before ordering primers."
+        "(BLASTN-short + explicit product enumeration)."
+    )
+    lines.append(
+        "- The independent verification section comes from stage 6b, a separate, "
+        "non-BLAST scan of the same primer sequences directly against the raw "
+        "genome text. It exists because BLAST's alignment/scoring is itself a "
+        "model that can diverge from the literal sequence content; treat a large "
+        "gap between the two as the thing to chase down, not the stage 6 number "
+        "alone."
+    )
+    lines.append(
+        "- Both are computational predictions, not wet-lab results — see the "
+        "validation guidance before ordering primers."
     )
     lines.append("")
 
@@ -283,6 +399,7 @@ def main():
 
     print(f">> report written -> {out_path}", file=sys.stderr)
     print(f"   shortlist: {len(shortlist_rows)} PASS pairs", file=sys.stderr)
+    print(f"   independent verification: {'yes, ' + str(len(independent_rows)) + ' pairs' if independent_rows else 'not found'}", file=sys.stderr)
     print(f"   near misses: {len(near_miss_rows)}", file=sys.stderr)
 
 
