@@ -380,7 +380,7 @@ def parse_blast_hits(
 
             pident = float(pident)
             length = int(length)
-            mismatches = int(mismatches)
+            mismatches = int(mismatch)
             gapopen = int(gapopen)
             qstart = int(qstart)
             qend = int(qend)
@@ -388,7 +388,7 @@ def parse_blast_hits(
             send = int(send)
             qlen = int(qlen)
 
-            if qid not in primer_lookup:
+            if qseqid not in primer_lookup:
                 continue
 
             # Full-length query coverage is mandatory.
@@ -428,9 +428,9 @@ def parse_blast_hits(
                 start = send
                 end = sstart
 
-            sites[qid].append({
-                "primer_name": qid,
-                "contig": contig,
+            sites[qseqid].append({
+                "primer_name": qseqid,
+                "contig": sseqid,
                 "start": start,
                 "end": end,
                 "strand": strand,
@@ -942,6 +942,7 @@ def main():
             args.min_product,
             args.max_product,
             args.max_primer_sites,
+            args.three_prime_window,
         )
 
         all_offtarget_binding_rows.extend(
