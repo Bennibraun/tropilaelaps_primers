@@ -92,7 +92,7 @@ Minimum viable set — expand as needed. See `docs/references.md` for accessions
 - [ ] Repeat discovery (`scripts/02_repeat_discovery.sh`)
 - [ ] Specificity screen — assembled off-targets (`03`) + read-based off-targets (`03b`)
 - [ ] Copy-number & conservation ranking (`scripts/04_copy_number_ranking.py`)
-- [ ] Primer design (`scripts/05_primer_design.py`) + in-silico PCR (`scripts/06_ispcr_validation.sh`)
+- [ ] Primer design (`scripts/05_primer_design.py`) + in-silico PCR (`scripts/06_pcr_validation_v2.py`)
 - [ ] Wet-lab shortlist
 
 None of the scripts have been run yet (no assembly in hand) — they're written

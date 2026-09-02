@@ -215,7 +215,7 @@ def main():
     print(f"{n_with_pairs}/{n_candidates} candidates yielded at least one primer pair "
           f"(short/uninformative cores are skipped, not an error)", file=sys.stderr)
     print(f"Primer pairs -> {out_path}", file=sys.stderr)
-    print(f"Next: scripts/06_ispcr_validation.sh {out_path} <tropi_assembly> data/reference/*/*.fna", file=sys.stderr)
+    print(f"Next: scripts/06_pcr_validation_v2.py {out_path} <tropi_assembly> data/reference/*/*.fna", file=sys.stderr)
 
 
 if __name__ == "__main__":
