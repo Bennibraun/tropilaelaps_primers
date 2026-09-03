@@ -104,24 +104,119 @@ def blast_copies(candidates, db, workdir, threads):
         "-num_threads", str(threads),
         "-max_target_seqs", str(MAX_HITS_PER_CANDIDATE),
         "-dust", "yes",
-        "-outfmt", "6 qseqid sseqid pident length qlen sstart send",
+        "-outfmt", "6 qseqid sseqid pident length qlen qstart qend sstart send",
     ], stdout=open(out, "w"))
     return out
 
 
+# --- locus clustering -------------------------------------------------------
+#
+# A single HSP covering >=MIN_COPY_LEN_FRAC of the query used to be required
+# for a hit to count as a "copy" (see git history / docs/plan.md notes). That
+# silently dropped every genuinely diverged copy of a candidate: RepeatModeler
+# consensus sequences are built by averaging an alignment of many real copies,
+# so an individual copy that diverges from the consensus in different places
+# often only aligns to it in fragments -- each fragment covers well under 50%
+# of the query on its own, even though the copy is real and the fragments
+# together cover most of it. The fix: cluster HSPs into genomic loci first,
+# then judge each *locus* (union of its fragments' query coverage) against the
+# length-fraction threshold, instead of judging each HSP in isolation.
+#
+# The tricky part is not merging together truly distinct copies. A tandem
+# satellite has many real copies sitting right next to each other in the
+# genome with ~zero gap between them -- genomic adjacency alone can't tell
+# "one copy split by an indel" from "two adjacent copies". The discriminator
+# used here is the QUERY coordinates: fragments of one diverged copy cover
+# *different, largely non-overlapping* parts of the query (the parts that
+# still match, on either side of wherever it diverged); adjacent hits from
+# genuinely separate tandem copies instead each re-cover the *same* region of
+# the query (the same repeat unit), so their query ranges overlap heavily.
+# Only the first pattern gets merged.
+LOCUS_MAX_GENOMIC_GAP = 1000  # bp; max genomic gap between HSPs to treat as one insertion
+LOCUS_MAX_QUERY_OVERLAP_FRAC = 0.2  # max reciprocal query-range overlap to still merge
+
+
+def _query_overlap_frac(a, b):
+    """Fraction of the shorter [qstart,qend] interval that a and b share."""
+    lo = max(a[0], b[0])
+    hi = min(a[1], b[1])
+    overlap = max(0, hi - lo + 1)
+    shorter = min(a[1] - a[0] + 1, b[1] - b[0] + 1)
+    return overlap / shorter if shorter else 0.0
+
+
+def cluster_loci(raw_hits, qlen):
+    """
+    Group per-candidate HSPs into genomic loci and keep the ones whose
+    combined (unioned) query coverage reaches MIN_COPY_LEN_FRAC of the query.
+
+    raw_hits: list of (chrom, qstart, qend, start0, end, strand), 1-based
+              qstart/qend, 0-based half-open start0/end.
+
+    Returns: list of (chrom, start0, end, strand) loci -- same shape
+    write_bed_and_extract() already expects.
+    """
+    loci = []
+
+    by_group = defaultdict(list)
+    for chrom, qstart, qend, start0, end, strand in raw_hits:
+        by_group[(chrom, strand)].append((start0, end, qstart, qend))
+
+    for (chrom, strand), group_hits in by_group.items():
+        group_hits.sort(key=lambda h: h[0])
+
+        clusters = []  # each: {"start0", "end", "qspans": [(qstart,qend), ...]}
+        for start0, end, qstart, qend in group_hits:
+            placed = False
+            for cl in clusters:
+                gap = start0 - cl["end"]
+                if gap > LOCUS_MAX_GENOMIC_GAP:
+                    continue
+                overlaps_existing = any(
+                    _query_overlap_frac((qstart, qend), qs) > LOCUS_MAX_QUERY_OVERLAP_FRAC
+                    for qs in cl["qspans"]
+                )
+                if overlaps_existing:
+                    continue
+                cl["start0"] = min(cl["start0"], start0)
+                cl["end"] = max(cl["end"], end)
+                cl["qspans"].append((qstart, qend))
+                placed = True
+                break
+            if not placed:
+                clusters.append({"start0": start0, "end": end, "qspans": [(qstart, qend)]})
+
+        for cl in clusters:
+            qspans = sorted(cl["qspans"])
+            covered = 0
+            cur_lo, cur_hi = qspans[0]
+            for lo, hi in qspans[1:]:
+                if lo <= cur_hi + 1:
+                    cur_hi = max(cur_hi, hi)
+                else:
+                    covered += cur_hi - cur_lo + 1
+                    cur_lo, cur_hi = lo, hi
+            covered += cur_hi - cur_lo + 1
+
+            if covered >= MIN_COPY_LEN_FRAC * qlen:
+                loci.append((chrom, cl["start0"], cl["end"], strand))
+
+    return loci
+
+
 def parse_hits(hits_path):
-    """candidate -> list of (chrom, start0, end, strand)"""
+    """candidate -> list of raw (chrom, qstart, qend, start0, end, strand) HSPs."""
     hits = defaultdict(list)
     with open(hits_path) as fh:
         for line in fh:
-            qseqid, sseqid, pident, length, qlen, sstart, send = line.rstrip("\n").split("\t")
-            length, qlen = int(length), int(qlen)
-            if length < MIN_COPY_LEN_FRAC * qlen:
-                continue
+            qseqid, sseqid, pident, length, qlen, qstart, qend, sstart, send = (
+                line.rstrip("\n").split("\t")
+            )
+            qstart, qend = int(qstart), int(qend)
             s, e = int(sstart), int(send)
             strand = "+" if s <= e else "-"
             start0, end = (s - 1, e) if s <= e else (e - 1, s)
-            hits[qseqid].append((sseqid, start0, end, strand))
+            hits[qseqid].append((sseqid, qstart, qend, start0, end, strand))
     return hits
 
 
@@ -232,12 +327,18 @@ def main():
     db = build_self_blastdb(assembly, workdir)
     print(">> mapping candidates back onto the assembly", file=sys.stderr)
     hits_path = blast_copies(candidates, db, workdir, threads)
-    hits = parse_hits(hits_path)
+    raw_hits = parse_hits(hits_path)
 
     # Copy number is BLAST-derived and cheap, so compute it for ALL candidates
     # first. The expensive part (per-candidate MAFFT + core) is what blew the
     # wall clock, so when --top-n is set we run it only on the highest-copy
     # families — which is exactly what a high-copy PCR target needs anyway.
+    #
+    # Cluster fragmented HSPs into loci before counting -- see cluster_loci()
+    # docstring. This is the expensive-ish step here (pure Python, no
+    # subprocess), but still cheap relative to BLAST/MAFFT.
+    print(">> clustering fragmented BLAST hits into genomic loci", file=sys.stderr)
+    hits = {cid: cluster_loci(raw_hits.get(cid, []), lengths[cid]) for cid in lengths}
     copy_counts = {cid: len(hits.get(cid, [])) for cid in lengths}
     if args.top_n is not None:
         # candidates with >=1 copy, most copies first; ties broken by longer candidate
@@ -265,7 +366,7 @@ def main():
               file=sys.stderr, flush=True)
         if n_copies == 0:
             rows.append({"candidate_id": cand_id, "n_copies": 0, "core_len": 0,
-                         "core_identity": "", "note": "no self-hit (unique single-copy candidate)"})
+                         "core_identity": "", "note": "no locus reached the coverage threshold (unique single-copy candidate)"})
             core_records.append((cand_id, seqs[cand_id]))
             continue
 

@@ -7,7 +7,11 @@ For every primer pair from Stage 5:
   TARGET GENOME
     - must produce >=1 PCR product
     - product must be 70-150 bp
-    - multiple products are reported and flagged
+    - multiple products are accepted (PASS_HIGH_COPY) only when they are all
+      the same size within MULTI_COPY_MAX_SIZE_RANGE bp -- the signature of a
+      real high-copy repeat amplifying cleanly at every copy. Multiple
+      products of visibly different sizes are flagged as
+      TARGET_MULTIPLE_PRODUCTS and rejected (nonspecific/multi-locus).
 
   OFF-TARGET GENOMES
     - must produce ZERO PCR-compatible products
@@ -87,6 +91,12 @@ THREE_PRIME_WINDOW = 5
 # A primer occurring at enormous numbers of sites is not a useful assay
 # primer, regardless of whether some of those sites happen to pair.
 MAX_PRIMER_SITES = 150
+
+# Multiple target products are only accepted (PASS_HIGH_COPY) when they are
+# all within this many bp of each other -- see the classification note below.
+# 5bp tolerates a little indel variation between diverged repeat copies while
+# still rejecting the genuinely scattered-size multi-locus failure mode.
+MULTI_COPY_MAX_SIZE_RANGE = 5
 
 # BLAST word size. 7 is appropriate for short primers.
 BLAST_WORD_SIZE = 7
@@ -458,9 +468,11 @@ def enumerate_products(
     """
     Find all PCR-compatible F/R site combinations.
 
-    Required geometry:
+    Required geometry (either orientation is a valid amplicon, since a
+    repeat copy can be inserted on either genomic strand):
 
-        F --->                <--- R
+        F --->                <--- R      (copy on the "+" reference strand)
+        R --->                <--- F      (copy inverted relative to reference)
 
     Both sites must be on the same contig.
 
@@ -489,20 +501,26 @@ def enumerate_products(
         reverses.sort(key=lambda x: x["start"])
 
         for f in forwards:
-            # A valid reverse primer must begin downstream of the forward
-            # primer and must be on the reverse strand.
             for r in reverses:
 
-                if f["strand"] != "+":
+                # Two valid geometries produce a real amplicon:
+                #  1. F on "+", R on "-", R downstream of F (copy in the
+                #     same orientation as the reference strand).
+                #  2. R on "+", F on "-", F downstream of R (copy inserted
+                #     in the opposite orientation).
+                # Checking only (1) silently drops every product at a
+                # repeat copy inserted in reverse orientation.
+                if f["strand"] == "+" and r["strand"] == "-":
+                    upstream, downstream = f, r
+                elif r["strand"] == "+" and f["strand"] == "-":
+                    upstream, downstream = r, f
+                else:
                     continue
 
-                if r["strand"] != "-":
+                if downstream["start"] <= upstream["start"]:
                     continue
 
-                if r["start"] <= f["start"]:
-                    continue
-
-                product_size = r["end"] - f["start"] + 1
+                product_size = downstream["end"] - upstream["start"] + 1
 
                 if product_size < min_product:
                     continue
@@ -512,8 +530,8 @@ def enumerate_products(
 
                 products.append({
                     "contig": contig,
-                    "start": f["start"],
-                    "end": r["end"],
+                    "start": upstream["start"],
+                    "end": downstream["end"],
                     "product_size": product_size,
 
                     "f_identity": f["identity"],
@@ -954,6 +972,14 @@ def main():
         )
 
         for pair_name, product_list in products.items():
+            if not product_list:
+                # products_by_pair always has an entry per pair (even an
+                # empty one, from the unconditional .extend() in
+                # validate_genome), so skipping empty lists here is required
+                # -- otherwise every off-target genome gets recorded as a
+                # cross-reactivity hit for every pair, regardless of whether
+                # any product was actually found.
+                continue
             off_product_counts[pair_name] += len(product_list)
             off_product_genomes[pair_name].add(name)
             all_offtarget_products.extend(product_list)
@@ -996,6 +1022,10 @@ def main():
         f_overused = (pair, "F") in target_overused
         r_overused = (pair, "R") in target_overused
 
+        pair_products = target_products.get(pair, [])
+        product_sizes = [pr["product_size"] for pr in pair_products]
+        size_range = (max(product_sizes) - min(product_sizes)) if product_sizes else 0
+
         if f_overused or r_overused:
             status = "REJECT_HIGH_COPY_TARGET"
 
@@ -1008,6 +1038,17 @@ def main():
         elif n_target_products == 1:
             status = "PASS"
 
+        elif size_range <= MULTI_COPY_MAX_SIZE_RANGE:
+            # Many products, but all (near-)identical in size: this is the
+            # signature of a good high-copy repeat assay (design goal, see
+            # docs/plan.md) -- one clean band/Ct from many template copies,
+            # not a smear. A small range is tolerated because divergent copies
+            # of a real repeat can carry a base or two of indel variation
+            # between the primer sites; a pair whose products vary widely in
+            # size is the actual multi-locus/nonspecific failure mode this
+            # rejects instead.
+            status = "PASS_HIGH_COPY"
+
         else:
             status = "TARGET_MULTIPLE_PRODUCTS"
 
@@ -1016,6 +1057,7 @@ def main():
             "target_f_sites": n_target_sites_f,
             "target_r_sites": n_target_sites_r,
             "target_products": n_target_products,
+            "target_product_size_range": size_range,
             "offtarget_products": n_off_products,
             "offtarget_genomes": ",".join(
                 sorted(off_product_genomes.get(pair, set()))
@@ -1036,6 +1078,7 @@ def main():
         "target_f_sites",
         "target_r_sites",
         "target_products",
+        "target_product_size_range",
         "offtarget_products",
         "offtarget_genomes",
         "status",
@@ -1107,9 +1150,12 @@ def main():
         "target_f_sites",
         "target_r_sites",
         "target_products",
+        "target_product_size_range",
         "offtarget_products",
         "offtarget_genomes",
     ]
+
+    PASS_STATUSES = {"PASS", "PASS_HIGH_COPY"}
 
     with open(out_path, "w", newline="") as fh:
         writer = csv.DictWriter(
@@ -1123,8 +1169,9 @@ def main():
             pair = p["pair_name"]
             c = classifications[pair]
 
-            # Only actual PASS pairs enter the final validated table.
-            if c["status"] != "PASS":
+            # Only actual PASS pairs (single-product, or same-size multi-copy)
+            # enter the final validated table.
+            if c["status"] not in PASS_STATUSES:
                 continue
 
             row = dict(p["row"])
@@ -1134,6 +1181,7 @@ def main():
                 "target_f_sites": c["target_f_sites"],
                 "target_r_sites": c["target_r_sites"],
                 "target_products": c["target_products"],
+                "target_product_size_range": c["target_product_size_range"],
                 "offtarget_products": c["offtarget_products"],
                 "offtarget_genomes": c["offtarget_genomes"],
             })
@@ -1154,6 +1202,7 @@ def main():
 
     for status in (
         "PASS",
+        "PASS_HIGH_COPY",
         "TARGET_MULTIPLE_PRODUCTS",
         "REJECT_NO_TARGET_PRODUCT",
         "REJECT_OFFTARGET",
