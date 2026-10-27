@@ -36,6 +36,7 @@ Usage:
         data/raw/tropi_assembly.fasta data/reference/*.fna
 """
 import argparse
+import bisect
 import csv
 import os
 import subprocess
@@ -63,26 +64,23 @@ def revcomp(s):
 def split_components(row):
     """Return {component_name: sequence} with FIP/BIP split into their halves.
 
-    FIP = F1c + F2 and BIP = B1c + B2. We do not know the internal split point
-    from the joined string alone, so we recover it from the per-half Tm columns
-    only if present; otherwise we fall back to splitting at half length, which
-    is close enough for a specificity screen (both halves are 18-22bp).
+    FIP = F1c + F2 and BIP = B1c + B2. The junction can't be recovered from the
+    joined string (each half is 18-22bp independently), so stage 5L writes the
+    halves out as their own columns. A midpoint split can be off by up to 4bp,
+    which puts F2 bases on the 3' end of the F1c query and breaks the 3'-end
+    binding test, so older TSVs without those columns are refused.
     """
     comps = {}
     for name in ("F3", "B3", "LF", "LB"):
         if row.get(name):
             comps[name] = row[name]
-    fip = row.get("FIP", "")
-    bip = row.get("BIP", "")
-    if fip:
-        # F1c is the 5' half, F2 the 3' half
-        h = len(fip) // 2
-        comps["FIP_F1c"] = fip[:h]
-        comps["FIP_F2"] = fip[h:]
-    if bip:
-        h = len(bip) // 2
-        comps["BIP_B1c"] = bip[:h]
-        comps["BIP_B2"] = bip[h:]
+    for name in ("FIP_F1c", "FIP_F2", "BIP_B1c", "BIP_B2"):
+        if not row.get(name):
+            sys.exit("%s: no %s column - lamp_primers.tsv predates stage 5L "
+                     "writing the FIP/BIP halves; delete it and rerun "
+                     "scripts/05L_lamp_primer_design.py"
+                     % (row.get("candidate_id", "?"), name))
+        comps[name] = row[name]
     return comps
 
 
@@ -169,6 +167,38 @@ def verdict_for(groups):
     return worst, detail
 
 
+def count_target_sites(binding):
+    """Number of loci where >=2 inner components co-locate.
+
+    colocated_groups() opens a window at every hit, so one locus with k bound
+    components shows up as up to k-1 overlapping groups - fine for a yes/no
+    verdict, wrong for a count. Instead, anchor on one inner component: each
+    copy of the target carries one binding site for it, so its hits that have
+    a different inner component within the window approximate the number of
+    sites. Take the max over anchors so a copy where one component's site has
+    drifted is still counted via another.
+    """
+    by_seq = defaultdict(list)
+    for comp in INNER:
+        for sseqid, s, _e in binding.get(comp, []):
+            by_seq[sseqid].append((s, comp))
+    for items in by_seq.values():
+        items.sort()
+    pos_by_seq = {k: [p for p, _ in v] for k, v in by_seq.items()}
+
+    best = 0
+    for anchor in INNER:
+        n = 0
+        for sseqid, s, _e in binding.get(anchor, []):
+            items, pos = by_seq[sseqid], pos_by_seq[sseqid]
+            lo = bisect.bisect_left(pos, s - COLOCATION_WINDOW)
+            hi = bisect.bisect_right(pos, s + COLOCATION_WINDOW)
+            if any(c != anchor for _, c in items[lo:hi]):
+                n += 1
+        best = max(best, n)
+    return best
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -203,9 +233,7 @@ def main():
         # --- on-target ---
         tb = blast_components(comps, target_db, workdir, "t%d" % idx)
         n_bound_target = sum(1 for c in comps if tb.get(c))
-        tgroups = colocated_groups(tb)
-        # count distinct loci where a full-ish set co-locates
-        n_sites = sum(1 for _, _, m in tgroups if len(m & INNER) >= 2)
+        n_sites = count_target_sites(tb)
 
         # --- off-targets ---
         worst, detail, worst_ref = "PASS", "", ""

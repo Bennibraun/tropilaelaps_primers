@@ -59,7 +59,12 @@ F3_F2_GAP = (0, 20)      # F3 sits just outside F2
 B2_B3_GAP = (0, 20)
 AMPLICON_MAX = 280       # F3 start -> B3c end; classic LAMP works best <=280bp
 AMPLICON_MIN = 180
-MAX_COMBINATIONS = 40000  # per-candidate cap on region placements evaluated
+F3_WINDOW = 60           # F3 start positions are searched in windows of this size
+# Bound the search. The region space is combinatorial and a core with no valid
+# set will otherwise burn minutes proving it. Candidates that admit a set almost
+# always find one early (the oligo lists are Tm-sorted), so a cap costs little
+# sensitivity and turns worst-case minutes into seconds.
+MAX_COMBINATIONS = 40000  # per-F3-window cap on region placements evaluated
 
 COMP = str.maketrans("ACGTNacgtn", "TGCANtgcan")
 
@@ -204,12 +209,10 @@ def dimer_ok(oligos):
 def design_lamp(cand_id, seq):
     """Place F3/F2/F1 ... B1c/B2c/B3c left-to-right and return the best set.
 
-    Search strategy: regions are placed in order, but at each step we keep a
-    list of viable oligos (all_oligos) rather than only the best-Tm one, and
-    iterate over them. A LAMP set has six interdependent regions packed into
-    ~200-280bp, so a greedy single-choice search almost always paints itself
-    into a corner - an oligo that is optimal locally can leave no legal
-    placement for everything downstream.
+    A LAMP set has six interdependent regions packed into ~200-280bp, so a
+    greedy single-choice search almost always paints itself into a corner - an
+    oligo that is optimal locally can leave no legal placement for everything
+    downstream. _placements() enumerates alternatives instead.
     """
     seq = seq.upper()
     _OLIGO_CACHE.clear()
@@ -219,90 +222,111 @@ def design_lamp(cand_id, seq):
         return None, "core %dbp < %dbp minimum for a LAMP set" % (n, AMPLICON_MIN)
 
     best_set = None
+    n_capped = 0
+
+    # F3 is tried in successive windows across the whole core, not just its
+    # first F3_WINDOW bp - long cores (1-1.5kb) otherwise go unsearched past
+    # their 5' end. The combination cap applies per window, so one dense
+    # window can't starve the rest of the core.
+    for f3_lo in range(0, n - AMPLICON_MIN + 1, F3_WINDOW):
+        for tried, placement in enumerate(_placements(seq, f3_lo, f3_lo + F3_WINDOW)):
+            if tried >= MAX_COMBINATIONS:
+                n_capped += 1
+                break
+            ((f3_seq, f3_s, f3_e, f3_tm), (f2_seq, f2_s, f2_e, f2_tm),
+             (f1_seq, f1_s, f1_e, f1_tm), (b1c_seq, b1_s, b1_e, b1_tm),
+             (b2c_seq, b2_s, b2_e, b2_tm), (b3c_seq, b3_s, b3_e, b3_tm)) = placement
+            amp = b3_e - f3_s
+            if not (AMPLICON_MIN <= amp <= AMPLICON_MAX):
+                continue
+
+            # assemble: FIP = F1c + F2 ; BIP = B1c + B2
+            fip = revcomp(f1_seq) + f2_seq
+            bip = b1c_seq + revcomp(b2c_seq)
+            b3_primer = revcomp(b3c_seq)
+
+            # loop primers sit in the F2-F1 and B1c-B2c gaps
+            lf_seq = ""
+            if f1_s - f2_e >= LEN_LOOP[0]:
+                lf = all_oligos(seq, f2_e, f1_s, TM_LOOP, LEN_LOOP, limit=1)
+                if lf:
+                    lf_seq = revcomp(lf[0][0])
+            lb_seq = ""
+            if b2_s - b1_e >= LEN_LOOP[0]:
+                lb = all_oligos(seq, b1_e, b2_s, TM_LOOP, LEN_LOOP, limit=1)
+                if lb:
+                    lb_seq = lb[0][0]
+
+            oligos = {"F3": f3_seq, "B3": b3_primer,
+                      "FIP": fip, "BIP": bip}
+            if lf_seq:
+                oligos["LF"] = lf_seq
+            if lb_seq:
+                oligos["LB"] = lb_seq
+            ok, _why = dimer_ok(oligos)
+            if not ok:
+                continue
+
+            score = (-(bool(lf_seq) + bool(lb_seq)), amp)
+            row = {
+                "candidate_id": cand_id, "core_len": n,
+                "F3": f3_seq, "F3_tm": round(f3_tm, 1),
+                "B3": b3_primer, "B3_tm": round(b3_tm, 1),
+                "FIP": fip, "FIP_F1c_tm": round(f1_tm, 1),
+                "FIP_F2_tm": round(f2_tm, 1),
+                "BIP": bip, "BIP_B1c_tm": round(b1_tm, 1),
+                "BIP_B2_tm": round(b2_tm, 1),
+                # FIP/BIP halves, written out so stage 6L can
+                # screen each one without guessing the junction
+                "FIP_F1c": revcomp(f1_seq), "FIP_F2": f2_seq,
+                "BIP_B1c": b1c_seq, "BIP_B2": revcomp(b2c_seq),
+                "LF": lf_seq, "LB": lb_seq,
+                "n_loop_primers": bool(lf_seq) + bool(lb_seq),
+                "amplicon_len": amp,
+                "F3_start": f3_s, "B3c_end": b3_e,
+            }
+            if best_set is None or score < best_set[0]:
+                best_set = (score, row)
+            if lf_seq and lb_seq:
+                return best_set[1], ""
+    if best_set:
+        return best_set[1], ""
+    if n_capped:
+        return None, ("no valid LAMP set in %dbp core (search cap %d reached in "
+                      "%d window(s))" % (n, MAX_COMBINATIONS, n_capped))
+    return None, "no valid LAMP set in %dbp core (Tm/GC/spacing/dimer constraints)" % n
+
+
+def _placements(seq, f3_lo, f3_hi):
+    """Yield every F3..B3c placement whose F3 starts in seq[f3_lo:f3_hi].
+
+    Search strategy: regions are placed in order, but at each step we keep a
+    list of viable oligos (all_oligos) rather than only the best-Tm one, and
+    iterate over them. Lists are Tm-sorted, so good placements come early.
+    """
+    n = len(seq)
     # windows are generous: each region only needs to START within its window,
     # and we let the Tm filter inside all_oligos do the real selection.
     W = 45
-    # Bound the search. The region space is combinatorial and a core with no
-    # valid set will otherwise burn minutes proving it. Candidates that admit a
-    # set almost always find one early (the oligo lists are Tm-sorted), so a cap
-    # costs little sensitivity and turns worst-case minutes into seconds.
-    tried = 0
-
-    for f3_seq, f3_s, f3_e, f3_tm in all_oligos(seq, 0, min(60, n), TM_OUTER, LEN_OUTER, limit=12):
-        for f2_seq, f2_s, f2_e, f2_tm in all_oligos(
-                seq, f3_e + F3_F2_GAP[0], min(f3_e + F3_F2_GAP[1] + W, n),
-                TM_INNER, LEN_INNER, limit=12):
-            for f1_seq, f1_s, f1_e, f1_tm in all_oligos(
-                    seq, f2_e + F2_F1_GAP[0], min(f2_e + F2_F1_GAP[1] + W, n),
-                    TM_INNER, LEN_INNER, limit=10):
-                for b1c_seq, b1_s, b1_e, b1_tm in all_oligos(
-                        seq, f1_e, min(f1_e + 25 + W, n),
-                        TM_INNER, LEN_INNER, limit=10):
-                    for b2c_seq, b2_s, b2_e, b2_tm in all_oligos(
-                            seq, b1_e + B1_B2_GAP[0], min(b1_e + B1_B2_GAP[1] + W, n),
-                            TM_INNER, LEN_INNER, limit=10):
-                        for b3c_seq, b3_s, b3_e, b3_tm in all_oligos(
-                                seq, b2_e + B2_B3_GAP[0], min(b2_e + B2_B3_GAP[1] + W, n),
-                                TM_OUTER, LEN_OUTER, limit=8):
-                            tried += 1
-                            if tried > MAX_COMBINATIONS:
-                                if best_set:
-                                    return best_set[1], ""
-                                return None, ("no valid LAMP set in %dbp core "
-                                              "(search cap %d reached)"
-                                              % (n, MAX_COMBINATIONS))
-                            amp = b3_e - f3_s
-                            if not (AMPLICON_MIN <= amp <= AMPLICON_MAX):
-                                continue
-
-                            # assemble: FIP = F1c + F2 ; BIP = B1c + B2
-                            fip = revcomp(f1_seq) + f2_seq
-                            bip = b1c_seq + revcomp(b2c_seq)
-                            b3_primer = revcomp(b3c_seq)
-
-                            # loop primers sit in the F2-F1 and B1c-B2c gaps
-                            lf_seq = ""
-                            if f1_s - f2_e >= LEN_LOOP[0]:
-                                lf = all_oligos(seq, f2_e, f1_s, TM_LOOP, LEN_LOOP, limit=1)
-                                if lf:
-                                    lf_seq = revcomp(lf[0][0])
-                            lb_seq = ""
-                            if b2_s - b1_e >= LEN_LOOP[0]:
-                                lb = all_oligos(seq, b1_e, b2_s, TM_LOOP, LEN_LOOP, limit=1)
-                                if lb:
-                                    lb_seq = lb[0][0]
-
-                            oligos = {"F3": f3_seq, "B3": b3_primer,
-                                      "FIP": fip, "BIP": bip}
-                            if lf_seq:
-                                oligos["LF"] = lf_seq
-                            if lb_seq:
-                                oligos["LB"] = lb_seq
-                            ok, _why = dimer_ok(oligos)
-                            if not ok:
-                                continue
-
-                            score = (-(bool(lf_seq) + bool(lb_seq)), amp)
-                            row = {
-                                "candidate_id": cand_id, "core_len": n,
-                                "F3": f3_seq, "F3_tm": round(f3_tm, 1),
-                                "B3": b3_primer, "B3_tm": round(b3_tm, 1),
-                                "FIP": fip, "FIP_F1c_tm": round(f1_tm, 1),
-                                "FIP_F2_tm": round(f2_tm, 1),
-                                "BIP": bip, "BIP_B1c_tm": round(b1_tm, 1),
-                                "BIP_B2_tm": round(b2_tm, 1),
-                                "LF": lf_seq, "LB": lb_seq,
-                                "n_loop_primers": bool(lf_seq) + bool(lb_seq),
-                                "amplicon_len": amp,
-                                "F3_start": f3_s, "B3c_end": b3_e,
-                            }
-                            if best_set is None or score < best_set[0]:
-                                best_set = (score, row)
-                            if lf_seq and lb_seq:
-                                return best_set[1], ""
-    if best_set:
-        return best_set[1], ""
-    return None, "no valid LAMP set in %dbp core (Tm/GC/spacing/dimer constraints)" % n
+    for f3 in all_oligos(seq, f3_lo, min(f3_hi, n), TM_OUTER, LEN_OUTER, limit=12):
+        f3_e = f3[2]
+        for f2 in all_oligos(seq, f3_e + F3_F2_GAP[0], min(f3_e + F3_F2_GAP[1] + W, n),
+                             TM_INNER, LEN_INNER, limit=12):
+            f2_e = f2[2]
+            for f1 in all_oligos(seq, f2_e + F2_F1_GAP[0], min(f2_e + F2_F1_GAP[1] + W, n),
+                                 TM_INNER, LEN_INNER, limit=10):
+                f1_e = f1[2]
+                for b1c in all_oligos(seq, f1_e, min(f1_e + 25 + W, n),
+                                      TM_INNER, LEN_INNER, limit=10):
+                    b1_e = b1c[2]
+                    for b2c in all_oligos(seq, b1_e + B1_B2_GAP[0],
+                                          min(b1_e + B1_B2_GAP[1] + W, n),
+                                          TM_INNER, LEN_INNER, limit=10):
+                        b2_e = b2c[2]
+                        for b3c in all_oligos(seq, b2_e + B2_B3_GAP[0],
+                                              min(b2_e + B2_B3_GAP[1] + W, n),
+                                              TM_OUTER, LEN_OUTER, limit=8):
+                            yield f3, f2, f1, b1c, b2c, b3c
 
 
 def read_fasta(path):
@@ -330,6 +354,7 @@ def main():
 
     fields = ["candidate_id", "core_len", "F3", "F3_tm", "B3", "B3_tm",
               "FIP", "FIP_F1c_tm", "FIP_F2_tm", "BIP", "BIP_B1c_tm", "BIP_B2_tm",
+              "FIP_F1c", "FIP_F2", "BIP_B1c", "BIP_B2",
               "LF", "LB", "n_loop_primers", "amplicon_len", "F3_start", "B3c_end"]
     rows, rejects = [], []
     n_cand = 0
