@@ -28,6 +28,7 @@ amount of debris DNA.
 - `05L_lamp_primer_design.py` - LAMP track: F3/B3/FIP/BIP/LF/LB oligo sets on the same conserved cores.
 - `06_pcr_validation_v2.py` - in-silico PCR (BLASTN-short + explicit product enumeration in both primer orientations) against tropi and every off-target.
 - `06L_lamp_validation.py` - specificity check for LAMP sets (co-location of binding components; a coarser proxy than PCR product enumeration).
+- `06Lb_lamp_independent_verify.py` - independent exact raw-FASTA verification of LAMP component binding and co-location for the clean shortlist.
 - `06b_independent_verify.py` - non-BLAST re-check of the shortlist: literal and fuzzy substring search directly against genome text.
 - `07_report.py` - builds `results/report.md` from everything above.
 - `run_pipeline.sh` - runs stages 4 through 7 in order, skipping any stage whose output already exists.

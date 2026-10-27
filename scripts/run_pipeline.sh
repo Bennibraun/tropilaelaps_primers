@@ -130,6 +130,16 @@ else
   ./scripts/06L_lamp_validation.py "$R/lamp_primers.tsv" data/raw/tropi_assembly.fasta data/reference/*.fna 2>&1 | tee "$LOG/stage06L.log"
 fi
 
+LAMP_INDEPENDENT_TSV="data/interim/lamp_validation/independent_verification.tsv"
+if have "$LAMP_INDEPENDENT_TSV"; then
+  echo "[$(ts)] STAGE 6Lb: skipped (independent LAMP verification exists)"
+else
+  echo "[$(ts)] STAGE 6Lb: independent raw-FASTA LAMP verification"
+  ./scripts/06Lb_lamp_independent_verify.py "$R/lamp_validated.tsv" \
+    data/raw/tropi_assembly.fasta data/reference/*.fna \
+    -o "$LAMP_INDEPENDENT_TSV" 2>&1 | tee "$LOG/stage06Lb.log"
+fi
+
 echo "[$(ts)] STAGE 7: report"
 ./scripts/07_report.py --candidates-dir "$R" --out results/report.md 2>&1 | tee "$LOG/stage07.log"
 
