@@ -41,6 +41,20 @@ Method
      k-mer identity, which is stronger evidence of conservation than an
      alignment consensus.
 
+KNOWN CAVEAT -- kmer_ranked.tsv's n_loci is a WEAK lower bound, not a trustworthy
+copy-number estimate, for any family whose window contains several comparably
+high-copy k-mers: at each of that k-mer's genomic occurrences, a DIFFERENT
+neighboring k-mer may have a marginally higher count and win the local anchor
+role, so one true repeat family gets fragmented across many "families" that
+each report a small n_loci despite the underlying anchor_tropi_copies being
+large. Observed in practice: an anchor with tropi-wide count 252 that "won"
+anchor status in only 1 of its 252 windows. This does NOT affect correctness
+of the downstream stage 6 validation (target_products there is computed by an
+independent genome-wide BLAST per primer pair, not from n_loci) -- but do not
+rank or present candidates by n_loci. Use validated_primers.tsv's
+target_products instead, exactly as with stage 4's n_copies vs. stage 6's
+target_products for the RepeatModeler/TRF track.
+
 Output
 ------
 results/candidates/kmer_candidates.fasta   -- one representative sequence per family

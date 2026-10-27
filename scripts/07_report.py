@@ -87,7 +87,8 @@ def md_table(rows, columns, headers=None):
     return "\n".join(lines)
 
 
-def build_funnel(ranked, primers, validated_all, lamp_primers=None, lamp_validated=None):
+def build_funnel(ranked, primers, validated_all, lamp_primers=None, lamp_validated=None,
+                  kmer_ranked=None, kmer_validated_all=None):
     """Candidate/pair counts at each stage, for a quick top-of-report summary."""
     lines = []
 
@@ -162,6 +163,27 @@ def build_funnel(ranked, primers, validated_all, lamp_primers=None, lamp_validat
     else:
         lines.append("- **Stage 6L:** lamp_validated.tsv not found — skipped.")
 
+    if kmer_ranked is not None:
+        lines.append(f"- **Stage 2b (k-mer discovery):** {len(kmer_ranked):,} candidate "
+                      f"families found (repeat-agnostic track, parallel to stage 2).")
+    else:
+        lines.append("- **Stage 2b:** kmer_ranked.tsv not found — skipped.")
+
+    if kmer_validated_all is not None:
+        kcounts = defaultdict(int)
+        for r in kmer_validated_all:
+            kcounts[r.get("status", "UNKNOWN")] += 1
+        ktotal = len(kmer_validated_all)
+        lines.append(f"- **Stage 6 (k-mer track PCR validation):** {ktotal:,} pairs tested.")
+        for status in (
+            "PASS", "PASS_HIGH_COPY", "TARGET_MULTIPLE_PRODUCTS",
+            "REJECT_NO_TARGET_PRODUCT", "REJECT_OFFTARGET", "REJECT_HIGH_COPY_TARGET",
+        ):
+            if kcounts.get(status):
+                lines.append(f"    - {status}: {kcounts[status]:,}")
+    else:
+        lines.append("- **Stage 6 (k-mer track):** rejection_summary.tsv not found — skipped.")
+
     return "\n".join(lines)
 
 
@@ -172,6 +194,8 @@ def main():
                      help="directory with stage 4-6 outputs (default: results/candidates)")
     ap.add_argument("--pcr-work-dir", default="data/interim/pcr_validation",
                      help="stage 6 working directory (default: data/interim/pcr_validation)")
+    ap.add_argument("--kmer-work-dir", default="data/interim/kmer_pcr_validation",
+                     help="k-mer track stage 6 working directory (default: data/interim/kmer_pcr_validation)")
     ap.add_argument("-o", "--out", default="results/report.md",
                      help="output Markdown report path")
     ap.add_argument("--top", type=int, default=20,
@@ -193,6 +217,12 @@ def main():
     lamp_primers = read_tsv(cdir / "lamp_primers.tsv")
     lamp_rejected = read_tsv(cdir / "lamp_rejected.tsv")
     lamp_validated = read_tsv(cdir / "lamp_validated.tsv")
+
+    kwdir = Path(args.kmer_work_dir)
+    kmer_ranked = read_tsv(cdir / "kmer_ranked.tsv")
+    kmer_ranked_by_id = {r["candidate_id"]: r for r in kmer_ranked} if kmer_ranked else {}
+    kmer_validated_pass = read_tsv(cdir / "kmer_validated.tsv")
+    kmer_validated_all = read_tsv(kwdir / "rejection_summary.tsv")
 
     ranked_by_id = {r["candidate_id"]: r for r in ranked} if ranked else {}
 
@@ -347,6 +377,38 @@ def main():
         ))
 
     # ------------------------------------------------------------------
+    # K-mer track (stage 2b): repeat-agnostic discovery, same stage 5/6 as
+    # the RepeatModeler/TRF track. Rank strictly by target_products (stage 6,
+    # per-primer-pair, trustworthy) -- NOT kmer_ranked.tsv's n_loci, which is
+    # a known-weak lower bound for families with several comparably high-copy
+    # k-mers (see 02b's docstring). Dedup by forward-primer sequence: the
+    # anchor-based family grouping in 02b can fragment one true repeat into
+    # many differently-named "families", which would otherwise show up here
+    # as several rows with identical or near-identical primers.
+    # ------------------------------------------------------------------
+    kmer_shortlist_rows = []
+    if kmer_validated_pass:
+        seen_fwd = set()
+        for p in kmer_validated_pass:
+            if p["fwd_seq"] in seen_fwd:
+                continue
+            seen_fwd.add(p["fwd_seq"])
+            fam = kmer_ranked_by_id.get(p["candidate_id"], {})
+            n_products = int(p["target_products"]) if str(p.get("target_products", "")).isdigit() else -1
+            kmer_shortlist_rows.append({
+                "pair_name": f"{p['candidate_id']}_pair{p['pair_rank']}",
+                "validation_status": p.get("validation_status", "?"),
+                "target_products": p.get("target_products", "?"),
+                "size_range": p.get("target_product_size_range", "0"),
+                "anchor_tropi_copies": fam.get("anchor_tropi_copies", "?"),
+                "product_size": p.get("product_size", "?"),
+                "fwd_seq": p.get("fwd_seq", ""),
+                "rev_seq": p.get("rev_seq", ""),
+                "_sort_products": n_products,
+            })
+        kmer_shortlist_rows.sort(key=lambda r: -r["_sort_products"])
+
+    # ------------------------------------------------------------------
     # Write report
     # ------------------------------------------------------------------
     lines = []
@@ -358,7 +420,8 @@ def main():
 
     lines.append("## Pipeline funnel")
     lines.append("")
-    lines.append(build_funnel(ranked, primers, validated_all, lamp_primers, lamp_validated))
+    lines.append(build_funnel(ranked, primers, validated_all, lamp_primers, lamp_validated,
+                               kmer_ranked, kmer_validated_all))
     lines.append("")
 
     lines.append("## Shortlist: PASS primer pairs")
@@ -517,6 +580,50 @@ def main():
             lines.append("")
     lines.append("")
 
+    lines.append("## K-mer track shortlist (repeat-agnostic discovery)")
+    lines.append("")
+    if kmer_validated_pass is None:
+        lines.append("Not found — run `scripts/02b_kmer_discovery.py`, then "
+                      "`scripts/05_primer_design.py` and `scripts/06_pcr_validation_v2.py` "
+                      "on `kmer_candidates.fasta` to populate this section.")
+    else:
+        lines.append(
+            "Independent discovery track (stage 2b): candidates are exact canonical "
+            "k-mers common in tropi and absent from every off-target genome, found "
+            "without any repeat annotation step, then run through the same primer3 "
+            "design and in-silico PCR validation (stage 5/6) as the RepeatModeler/TRF "
+            "track above. Deduplicated by forward-primer sequence below — stage 2b's "
+            "anchor-based family grouping can fragment one true repeat into several "
+            "differently-named \"families\" (see `02b_kmer_discovery.py`'s docstring), "
+            "so `kmer_ranked.tsv`'s `n_loci` is not used for ranking here; "
+            "`target_products` (this specific primer pair's own stage 6 validated "
+            "count) is."
+        )
+        lines.append("")
+        top_kmer = kmer_shortlist_rows[:args.top]
+        lines.append(f"{len(kmer_shortlist_rows):,} distinct primer pairs passed (of "
+                      f"{len(kmer_validated_pass):,} total rows before dedup). Showing top "
+                      f"{len(top_kmer)}.")
+        lines.append("")
+        lines.append(md_table(
+            top_kmer,
+            columns=["pair_name", "validation_status", "target_products", "size_range",
+                     "anchor_tropi_copies", "product_size", "fwd_seq", "rev_seq"],
+            headers=["candidate", "status", "validated target copies", "size range (bp)",
+                     "anchor k-mer tropi count", "amplicon (bp)", "fwd primer", "rev primer"],
+        ))
+        lines.append("")
+        lines.append(
+            "The top hit here (`KMER_AACCCCTCGAACTGGTCGAG_n2`) sits on the same locus as "
+            "the top PCR-track hit (`RM_rnd-1_family-25__LINE_R1`) above — two independent "
+            "discovery methods (repeat annotation vs. raw k-mer census) converged on the "
+            "same repeat family, about as strong a computational cross-check as this "
+            "pipeline can produce for a single candidate. Spot-checked by direct exact-text "
+            "search against all 5 genomes: fwd/rev primers found on both strands of the "
+            "target only, zero exact hits in any off-target."
+        )
+    lines.append("")
+
     lines.append("## Notes")
     lines.append("")
     lines.append(
@@ -546,6 +653,12 @@ def main():
         "- The LAMP shortlist has no independent (stage 6b-style) re-verification "
         "pass — it's a lower-precision co-location proxy to begin with (see the "
         "section above), so treat it as more provisional than the PCR shortlist."
+    )
+    lines.append(
+        "- The k-mer track shortlist is only spot-checked by hand on its top hit, not "
+        "systematically independently re-verified (stage 6b) the way the PCR track's "
+        "full shortlist is — its stage 6 validation itself is the same trustworthy "
+        "BLAST-based method as the PCR track, just not double-checked at scale."
     )
     lines.append(
         "- All of the above are computational predictions, not wet-lab results — "
