@@ -11,7 +11,7 @@
 # already be done by the time you have its output. TRF is fast and safe to run
 # locally on a several-hundred-Mb genome.
 #
-# Usage: scripts/02_repeat_discovery.sh data/raw/tropi_assembly.fasta path/to/repeatmodeler-families.fa
+# Usage: scripts/02_repeat_discovery.sh /path/to/target.fasta path/to/repeatmodeler-families.fa
 set -euo pipefail
 
 ASSEMBLY="${1:?need path to the target assembly FASTA}"
@@ -117,4 +117,4 @@ echo "TRF satellite/tandem candidates (deduped) : $(grep -c '^>' "$WORK/trf_cand
 echo "Combined raw candidate set -> $OUT/candidates_raw.fasta"
 seqkit stats "$OUT/candidates_raw.fasta"
 echo
-echo "Next: scripts/03_specificity_screen.sh $OUT/candidates_raw.fasta data/reference/*/*.fna"
+echo "Next: scripts/03_specificity_screen.sh $OUT/candidates_raw.fasta /path/to/off-target.fasta ..."

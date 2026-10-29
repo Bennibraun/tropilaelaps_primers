@@ -2,15 +2,19 @@
 
 The only required biological input is a target genome FASTA:
 
-    snakemake --cores 8 --config target_assembly=/path/to/target.fasta
+    snakemake --cores 8 --configfile config/full.yaml \
+        --config target_assembly=target.fasta \
+        off_targets='["negative1.fasta", "negative2.fasta"]' \
+        output_dir=analysis
 
 Optional:
 
     --config target_name=my_species
 
-The workflow automatically downloads the default Apis/Varroa off-target panel,
-uses TRF-only repeat discovery unless repeatmodeler_families is supplied, and
-runs the PCR and LAMP tracks through their independent checks and report.
+Off-target references are supplied explicitly in the config, so the workflow
+does not assume a species, reference panel, or download location. It uses
+TRF-only repeat discovery unless repeatmodeler_families is supplied, and runs
+the PCR and LAMP tracks through their independent checks and report.
 """
 from pathlib import Path
 
@@ -26,20 +30,23 @@ TARGET = str(Path(config["target_assembly"]).resolve())
 NAME = config.get("target_name") or Path(TARGET).stem
 THREADS = int(config.get("threads", 8))
 RM = config.get("repeatmodeler_families", "")
+OUTPUT_DIR = Path(config.get("output_dir") or ".").expanduser().resolve()
+if not isinstance(config.get("off_targets", []), list):
+    raise ValueError("off_targets must be a YAML list of FASTA paths")
 REFS = [
-    "data/reference/Apis_cerana.fna",
-    "data/reference/Apis_mellifera.fna",
-    "data/reference/Varroa_destructor.fna",
-    "data/reference/Varroa_jacobsoni.fna",
+    str(Path(ref).expanduser().resolve())
+    for ref in config.get("off_targets", [])
 ]
-REF_MARKER = "data/reference/.references_ready"
-R = "results/candidates"
-W = "data/interim"
+R = str(OUTPUT_DIR / "results/candidates")
+W = str(OUTPUT_DIR / "data/interim")
+QC = str(OUTPUT_DIR / "data/interim/qc")
+REPEATS = str(OUTPUT_DIR / "data/interim/repeats")
+REPORT = str(OUTPUT_DIR / "results/report.md")
 
 
 rule all:
     input:
-        "data/interim/qc/seqkit_stats.txt",
+        f"{QC}/seqkit_stats.txt",
         f"{R}/unique_candidates.fasta",
         f"{R}/ranked_candidates.tsv",
         f"{R}/primers.tsv",
@@ -48,47 +55,38 @@ rule all:
         f"{R}/lamp_primers.tsv",
         f"{R}/lamp_validated.tsv",
         f"{W}/lamp_validation/independent_verification.tsv",
-        "results/report.md",
-
-
-rule fetch_references:
-    output:
-        refs=REFS,
-        marker=REF_MARKER,
-    conda: "env/environment.yml"
-    shell:
-        "mkdir -p data/reference && {ROOT}/scripts/00_fetch_references.sh && touch {output}"
+        REPORT,
 
 
 rule assembly_qc:
     input: assembly=TARGET
     output:
-        stats="data/interim/qc/seqkit_stats.txt",
-        contigs="data/interim/qc/contig_len_gc.tsv",
+        stats=f"{QC}/seqkit_stats.txt",
+        contigs=f"{QC}/contig_len_gc.tsv",
     threads: THREADS
     conda: "env/environment.yml"
     shell:
-        "THREADS={threads} {ROOT}/scripts/01_assembly_qc.sh {input.assembly}"
+        "cd {OUTPUT_DIR:q} && THREADS={threads} {ROOT}/scripts/01_assembly_qc.sh {input.assembly}"
 
 
 rule discover_repeats:
     input:
         assembly=TARGET,
-        qc="data/interim/qc/seqkit_stats.txt",
-    output: candidates="data/interim/repeats/candidates_raw.fasta"
+        qc=f"{QC}/seqkit_stats.txt",
+    output: candidates=f"{REPEATS}/candidates_raw.fasta"
     params: rm=RM
     threads: THREADS
     conda: "env/environment.yml"
     shell:
         r"""
-        THREADS={threads} {ROOT}/scripts/02_repeat_discovery.sh {input.assembly} {params.rm}
+        cd {OUTPUT_DIR:q} && THREADS={threads} {ROOT}/scripts/02_repeat_discovery.sh {input.assembly} {params.rm}
         test -s {output.candidates}
         """
 
 
 rule screen_candidate_specificity:
     input:
-        candidates="data/interim/repeats/candidates_raw.fasta",
+        candidates=f"{REPEATS}/candidates_raw.fasta",
         refs=REFS,
     output:
         unique=f"{R}/unique_candidates.fasta",
@@ -97,7 +95,7 @@ rule screen_candidate_specificity:
     conda: "env/environment.yml"
     shell:
         r"""
-        THREADS={threads} {ROOT}/scripts/03_specificity_screen.sh {input.candidates} {input.refs}
+        cd {OUTPUT_DIR:q} && THREADS={threads} {ROOT}/scripts/03_specificity_screen.sh {input.candidates} {input.refs}
         """
 
 
@@ -111,7 +109,7 @@ rule rank_copy_number:
     threads: THREADS
     conda: "env/environment.yml"
     shell:
-        "python {ROOT}/scripts/04_copy_number_ranking.py {input.assembly} {input.candidates} "
+        "cd {OUTPUT_DIR:q} && python {ROOT}/scripts/04_copy_number_ranking.py {input.assembly} {input.candidates} "
         "--outdir {R} --threads {threads}"
 
 
@@ -170,7 +168,7 @@ rule validate_lamp:
     threads: THREADS
     conda: "env/environment.yml"
     shell:
-        "THREADS={threads} python {ROOT}/scripts/06L_lamp_validation.py {input.primers} "
+        "cd {OUTPUT_DIR:q} && THREADS={threads} python {ROOT}/scripts/06L_lamp_validation.py {input.primers} "
         "{input.target} {input.refs} -o {output.validated}"
 
 
@@ -198,8 +196,8 @@ rule report:
         pcr_independent=f"{W}/pcr_validation/independent_verification.tsv",
         lamp=f"{R}/lamp_primers.tsv",
         lamp_validated=f"{R}/lamp_validated.tsv",
-    output: report="results/report.md"
+    output: report=REPORT
     conda: "env/environment.yml"
     shell:
-        "python {ROOT}/scripts/07_report.py --candidates-dir {R} "
+        "cd {OUTPUT_DIR:q} && python {ROOT}/scripts/07_report.py --candidates-dir {R} "
         "--pcr-work-dir {W}/pcr_validation --title {NAME} -o {output.report}"

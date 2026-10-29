@@ -43,8 +43,8 @@ Usage
 -----
 scripts/06_pcr_validation.py \
     results/candidates/primers.tsv \
-    data/raw/tropi_assembly.fasta \
-    data/reference/*/*.fna
+    /path/to/target.fasta \
+    /path/to/off-target-1.fasta /path/to/off-target-2.fasta
 
 Requirements
 ------------

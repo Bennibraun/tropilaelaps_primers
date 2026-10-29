@@ -20,7 +20,7 @@
 # For off-targets that have only raw WGS reads, use 03b_specificity_screen_reads.sh
 # — it writes to the same results/candidates/disqualified.txt so the two compose.
 #
-# Usage: scripts/03_specificity_screen.sh candidates.fasta data/reference/*.fna
+# Usage: scripts/03_specificity_screen.sh candidates.fasta /path/to/off-target.fasta ...
 set -euo pipefail
 
 CANDIDATES="${1:?need candidates FASTA}"

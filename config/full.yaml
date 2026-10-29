@@ -1,7 +1,13 @@
-# Defaults for the full workflow. The target FASTA is the only required input:
-# snakemake --cores 8 --config target_assembly=/path/to/genome.fasta
+# Defaults for the full workflow. Supply the target and any negative-control
+# reference FASTAs explicitly; the workflow does not download or assume them.
 
 target_assembly: ""
 target_name: ""
+# Absolute or relative directory for all pipeline data and results. When
+# omitted, Snakemake's --directory value is used (or the current directory).
+output_dir: ""
+# FASTA files to screen against. Use [] when no negative-control genomes are
+# available; add paths here for every genome that must be excluded.
+off_targets: []
 repeatmodeler_families: ""
 threads: 8

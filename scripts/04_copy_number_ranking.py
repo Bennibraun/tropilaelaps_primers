@@ -2,7 +2,7 @@
 """Stage 4: copy-number & conservation ranking.
 
 For each candidate that survived the specificity screen (stage 3/3b), map it
-back onto the T. mercedesae assembly to (a) confirm/count real genomic copies
+back onto the target assembly to (a) confirm/count real genomic copies
 and (b) extract those copies and find their conserved core — the near-invariant
 stretch primers must sit on to hybridize to every copy in every field
 population (see docs/plan.md, Stage 4).

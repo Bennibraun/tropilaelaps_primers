@@ -190,7 +190,7 @@ def build_funnel(ranked, primers, validated_all, lamp_primers=None, lamp_validat
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--title", default="Tropilaelaps mercedesae",
+    ap.add_argument("--title", default="Genome primer discovery report",
                     help="target name for the report heading")
     ap.add_argument("--candidates-dir", default="results/candidates",
                      help="directory with stage 4-6 outputs (default: results/candidates)")
@@ -402,7 +402,7 @@ def main():
                 "validation_status": p.get("validation_status", "?"),
                 "target_products": p.get("target_products", "?"),
                 "size_range": p.get("target_product_size_range", "0"),
-                "anchor_tropi_copies": fam.get("anchor_tropi_copies", "?"),
+                "anchor_target_copies": fam.get("anchor_target_copies", "?"),
                 "product_size": p.get("product_size", "?"),
                 "fwd_seq": p.get("fwd_seq", ""),
                 "rev_seq": p.get("rev_seq", ""),
@@ -591,7 +591,7 @@ def main():
     else:
         lines.append(
             "Independent discovery track (stage 2b): candidates are exact canonical "
-            "k-mers common in tropi and absent from every off-target genome, found "
+            "k-mers common in target and absent from every off-target genome, found "
             "without any repeat annotation step, then run through the same primer3 "
             "design and in-silico PCR validation (stage 5/6) as the RepeatModeler/TRF "
             "track above. Deduplicated by forward-primer sequence below — stage 2b's "
@@ -610,9 +610,9 @@ def main():
         lines.append(md_table(
             top_kmer,
             columns=["pair_name", "validation_status", "target_products", "size_range",
-                     "anchor_tropi_copies", "product_size", "fwd_seq", "rev_seq"],
+                     "anchor_target_copies", "product_size", "fwd_seq", "rev_seq"],
             headers=["candidate", "status", "validated target copies", "size range (bp)",
-                     "anchor k-mer tropi count", "amplicon (bp)", "fwd primer", "rev primer"],
+                     "anchor k-mer target count", "amplicon (bp)", "fwd primer", "rev primer"],
         ))
         lines.append("")
         lines.append(

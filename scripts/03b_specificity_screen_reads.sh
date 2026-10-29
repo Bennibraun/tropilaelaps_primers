@@ -2,7 +2,7 @@
 # Stage 3b: screen candidate sequences against off-target *raw WGS reads*.
 #
 # Use this when an off-target has sequencing reads but no assembly — e.g. a
-# Tropilaelaps congener (T. clareae) if/when WGS is obtained (from SRA or your own
+# target congener (off-target species) if/when WGS is obtained (from SRA or your own
 # sequencer). No assembly needed: we map the reads TO the candidates and reject any
 # candidate that gets covered. Unassembled reads are actually preferable here
 # because they retain repeat copies that assemblies collapse.
@@ -19,7 +19,7 @@
 set -euo pipefail
 
 CANDIDATES="${1:?need candidates FASTA}"
-OFFNAME="${2:?need a label for this off-target read set, e.g. T_clareae}"
+OFFNAME="${2:?need a label for this off-target read set}"
 shift 2
 READS=("$@")
 [ ${#READS[@]} -ge 1 ] || { echo "need at least one reads file" >&2; exit 1; }

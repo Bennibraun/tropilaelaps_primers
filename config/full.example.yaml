@@ -1,0 +1,16 @@
+# Example configuration for the current run.
+#
+# Copy this file, update the paths for a new genome, and pass it with:
+#   snakemake --cores 8 --snakefile Snakefile --configfile config/full.example.yaml
+
+target_assembly: /data/ben/tropilaelaps_primers_data/raw/tropi_assembly.fasta
+target_name: tropilaelaps_mercedesae
+output_dir: /data/ben/tropilaelaps_primers_data
+# Negative-control genomes used for specificity screening in this run.
+off_targets:
+  - /data/ben/tropilaelaps_primers_data/reference/Apis_cerana.fna
+  - /data/ben/tropilaelaps_primers_data/reference/Apis_mellifera.fna
+  - /data/ben/tropilaelaps_primers_data/reference/Varroa_destructor.fna
+  - /data/ben/tropilaelaps_primers_data/reference/Varroa_jacobsoni.fna
+repeatmodeler_families: ""
+threads: 8

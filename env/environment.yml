@@ -1,4 +1,4 @@
-name: tropi-primers
+name: genome-primer-pipeline
 channels:
   - conda-forge
   - bioconda
@@ -31,11 +31,6 @@ dependencies:
   # --- in-silico PCR validation ---
   - ispcr             # UCSC isPcr — scripts/06
   - ucsc-fatotwobit   # isPcr needs .2bit genome databases — scripts/06
-
-  # --- reference acquisition ---
-  - ncbi-datasets-cli # download off-target genomes by accession
-  - entrez-direct     # fetch T. clareae congener markers (no genome exists)
-  - sra-tools         # prefetch/fasterq-dump congener WGS reads if/when available
 
   # --- workflow + analysis ---
   - snakemake-minimal

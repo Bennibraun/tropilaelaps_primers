@@ -47,12 +47,17 @@
 *.nni
 *.nog
 
-# Data & results directories: run outputs, not code. Tracked via .gitkeep only.
+# Data & results directories: inputs and run outputs, not code. Tracked via
+# .gitkeep only.
+data/*
 data/raw/*
 data/reference/*
 data/interim/*
+results/*
 results/**/*
+!data/.gitkeep
 !data/**/.gitkeep
+!results/.gitkeep
 !results/**/.gitkeep
 !data/**/*.md
 !data/**/manifest*

@@ -13,17 +13,17 @@ family or tandem array. That classification step can miss real, useful signal
 window TRF happened to report (see docs/plan.md's stage-4 note), or repetitive
 sequence that just never got annotated at all. This script skips annotation
 entirely and asks the direct question instead: which exact k-mers are common
-in the T. mercedesae assembly and completely absent from every off-target
+in the target assembly and completely absent from every off-target
 genome? That is precisely the property a specific, high-copy primer site
 needs, independent of whether anything ever called the region a "repeat."
 
 Method
 ------
-  1. Count canonical k-mers (both strands) in the tropi assembly (jellyfish).
-  2. Keep the ones repeated >= --min-tropi-copies times (still cheap: a few
+  1. Count canonical k-mers (both strands) in the target assembly (jellyfish).
+  2. Keep the ones repeated >= --min-target-copies times (still cheap: a few
      million k-mers out of ~680M genomic positions, not the whole genome).
   3. Count canonical k-mers in each off-target genome, and query the
-     high-copy tropi set against each -- keep only k-mers with
+     high-copy target set against each -- keep only k-mers with
      <= --max-offtarget-count hits in EVERY off-target. This queries the small
      high-copy set, not the full genome, against each off-target: cheap.
   4. Find every genomic position of the surviving k-mers with a *single*
@@ -46,8 +46,8 @@ copy-number estimate, for any family whose window contains several comparably
 high-copy k-mers: at each of that k-mer's genomic occurrences, a DIFFERENT
 neighboring k-mer may have a marginally higher count and win the local anchor
 role, so one true repeat family gets fragmented across many "families" that
-each report a small n_loci despite the underlying anchor_tropi_copies being
-large. Observed in practice: an anchor with tropi-wide count 252 that "won"
+each report a small n_loci despite the underlying anchor_target_copies being
+large. This does NOT affect correctness of the downstream stage 6 validation.
 anchor status in only 1 of its 252 windows. This does NOT affect correctness
 of the downstream stage 6 validation (target_products there is computed by an
 independent genome-wide BLAST per primer pair, not from n_loci) -- but do not
@@ -58,7 +58,7 @@ target_products for the RepeatModeler/TRF track.
 Output
 ------
 results/candidates/kmer_candidates.fasta   -- one representative sequence per family
-results/candidates/kmer_ranked.tsv         -- family_id, n_loci, window_len, anchor_kmer, anchor_tropi_copies
+results/candidates/kmer_ranked.tsv         -- family_id, n_loci, window_len, anchor_kmer, anchor_target_copies
 
 Feed kmer_candidates.fasta into scripts/05_primer_design.py and
 scripts/06_pcr_validation_v2.py exactly like conserved_cores.fasta.
@@ -67,7 +67,7 @@ Requires: jellyfish (bioconda) on PATH.
 
 Usage
 -----
-scripts/02b_kmer_discovery.py data/raw/tropi_assembly.fasta data/reference/*.fna
+scripts/02b_kmer_discovery.py /path/to/target.fasta /path/to/off-target-1.fasta
 """
 import argparse
 import os
@@ -77,7 +77,7 @@ import sys
 from pathlib import Path
 
 DEFAULT_K = 20
-DEFAULT_MIN_TROPI_COPIES = 5
+DEFAULT_MIN_TARGET_COPIES = 5
 DEFAULT_MAX_OFFTARGET_COUNT = 0
 DEFAULT_MERGE_GAP = 30       # bp; merge surviving k-mer windows into one locus if closer than this
 DEFAULT_MIN_WINDOW_LEN = 120  # bp; drop loci too short to be a useful primer3 template
@@ -195,11 +195,11 @@ def canonical(kmer):
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("assembly", help="T. mercedesae assembly FASTA")
+    ap.add_argument("assembly", help="target assembly FASTA")
     ap.add_argument("offtargets", nargs="+", help="off-target genome FASTAs")
     ap.add_argument("-k", "--kmer-len", type=int, default=DEFAULT_K)
-    ap.add_argument("--min-tropi-copies", type=int, default=DEFAULT_MIN_TROPI_COPIES,
-                     help="minimum genome-wide count in tropi to keep a k-mer as "
+    ap.add_argument("--min-target-copies", type=int, default=DEFAULT_MIN_TARGET_COPIES,
+                     help="minimum genome-wide count in the target to keep a k-mer as "
                           "'repetitive' before off-target screening (default: %(default)s)")
     ap.add_argument("--max-offtarget-count", type=int, default=DEFAULT_MAX_OFFTARGET_COUNT,
                      help="max allowed count in any single off-target genome (default: %(default)s, "
@@ -235,32 +235,32 @@ def main():
     offtargets = [Path(x) for x in args.offtargets]
 
     # ------------------------------------------------------------------
-    # 1. Count k-mers in the tropi assembly.
+    # 1. Count k-mers in the target assembly.
     # ------------------------------------------------------------------
-    tropi_jf = work / "tropi.jf"
-    if tropi_jf.exists():
-        print(f">> reusing existing {tropi_jf}", file=sys.stderr)
+    target_jf = work / "target.jf"
+    if target_jf.exists():
+        print(f">> reusing existing {target_jf}", file=sys.stderr)
     else:
-        print(">> counting k-mers in the tropi assembly", file=sys.stderr)
+        print(">> counting k-mers in the target assembly", file=sys.stderr)
         # Hash size: genome is ~680Mb, so up to ~680M distinct k-mer slots in
         # the worst case (no repeats at all). Oversize a bit to avoid a costly
         # in-flight resize; RAM is not the constraint here (a few GB either way).
-        jellyfish_count(assembly, tropi_jf, k, hash_size=1_000_000_000, threads=args.threads)
+        jellyfish_count(assembly, target_jf, k, hash_size=1_000_000_000, threads=args.threads)
 
     # ------------------------------------------------------------------
-    # 2. Keep only the high-copy tropi k-mers -- this is the expensive-ish
+    # 2. Keep only the high-copy target k-mers -- this is the expensive-ish
     #    genome-wide step done exactly once, and even so it's just a hash
     #    dump, not a genome rescan.
     # ------------------------------------------------------------------
-    print(f">> extracting tropi k-mers with count >= {args.min_tropi_copies}", file=sys.stderr)
-    tropi_highcopy = dict(jellyfish_dump_highcopy(tropi_jf, args.min_tropi_copies))
-    print(f"   {len(tropi_highcopy):,} distinct high-copy k-mers", file=sys.stderr)
-    if not tropi_highcopy:
-        sys.exit("No k-mers passed --min-tropi-copies -- nothing to screen. "
-                  "Lower --min-tropi-copies and retry.")
+    print(f">> extracting target k-mers with count >= {args.min_target_copies}", file=sys.stderr)
+    target_highcopy = dict(jellyfish_dump_highcopy(target_jf, args.min_target_copies))
+    print(f"   {len(target_highcopy):,} distinct high-copy k-mers", file=sys.stderr)
+    if not target_highcopy:
+        sys.exit("No k-mers passed --min-target-copies -- nothing to screen. "
+                  "Lower --min-target-copies and retry.")
 
-    highcopy_fa = work / "tropi_highcopy.fa"
-    write_fasta(((f"k{i}", kmer) for i, kmer in enumerate(tropi_highcopy)), highcopy_fa)
+    highcopy_fa = work / "target_highcopy.fa"
+    write_fasta(((f"k{i}", kmer) for i, kmer in enumerate(target_highcopy)), highcopy_fa)
 
     # ------------------------------------------------------------------
     # 3. Screen the (small) high-copy set against every off-target genome.
@@ -268,7 +268,7 @@ def main():
     #    (200-360Mb); querying is proportional to the high-copy set size, not
     #    genome size, so this stays cheap regardless of off-target count.
     # ------------------------------------------------------------------
-    surviving = dict(tropi_highcopy)  # kmer -> tropi count; shrinks as off-targets are checked
+    surviving = dict(target_highcopy)  # kmer -> target count; shrinks as off-targets are checked
     for off in offtargets:
         if not surviving:
             break
@@ -298,14 +298,14 @@ def main():
         alive_fa.unlink(missing_ok=True)
         print(f"   {eliminated:,} eliminated, {len(surviving):,} remain", file=sys.stderr)
 
-    print(f">> {len(surviving):,} k-mers are high-copy in tropi and absent from "
+    print(f">> {len(surviving):,} k-mers are high-copy in target and absent from "
           f"all {len(offtargets)} off-target genome(s)", file=sys.stderr)
     if not surviving:
         sys.exit("No k-mers survived the off-target screen. Nothing to report.")
 
     # ------------------------------------------------------------------
     # 4. Locate every genomic occurrence of the survivors with ONE full
-    #    tropi-genome pass (not one per off-target). Build a tiny jellyfish DB
+    #    target-genome pass (not one per off-target). Build a tiny jellyfish DB
     #    from just the survivors so the query only matches what we care about.
     # ------------------------------------------------------------------
     survivors_fa = work / "survivors.fa"
@@ -314,7 +314,7 @@ def main():
     jellyfish_count(survivors_fa, survivors_jf, k,
                      hash_size=max(1000, len(surviving) * 2), threads=1)
 
-    print(">> locating survivor k-mers across the tropi assembly (single full-genome pass)",
+    print(">> locating survivor k-mers across the target assembly (single full-genome pass)",
           file=sys.stderr)
     lengths, record_order, has_n = fasta_lengths(assembly)
     if has_n:
@@ -384,7 +384,7 @@ def main():
 
     for contig, start0, end in windows:
         seq = genome[contig][start0:end]
-        # anchor = the survivor k-mer within this window with the highest tropi copy number
+        # anchor = the survivor k-mer within this window with the highest target copy number
         best_anchor, best_count = None, -1
         for i in range(0, len(seq) - k + 1):
             kmer = canonical(seq[i:i + k])
@@ -408,7 +408,7 @@ def main():
     ranked_tsv = outdir / "kmer_ranked.tsv"
 
     with open(cand_fasta, "w") as ffa, open(ranked_tsv, "w") as ftsv:
-        ftsv.write("candidate_id\tn_loci\twindow_len\tanchor_kmer\tanchor_tropi_copies\n")
+        ftsv.write("candidate_id\tn_loci\twindow_len\tanchor_kmer\tanchor_target_copies\n")
         for anchor, loci in families:
             n_loci = len(loci)
             seq_len, seq = family_best_seq[anchor]

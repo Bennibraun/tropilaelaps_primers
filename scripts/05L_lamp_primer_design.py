@@ -387,7 +387,7 @@ def main():
     print("LAMP sets -> %s" % out, file=sys.stderr)
     print("Rejected  -> %s  (mostly cores too short - LAMP needs %d-%dbp vs ~40bp "
           "for a PCR pair)" % (rej, AMPLICON_MIN, AMPLICON_MAX), file=sys.stderr)
-    print("Next: scripts/06L_lamp_validation.py %s <assembly> data/reference/*.fna"
+    print("Next: scripts/06L_lamp_validation.py %s <target_assembly> <off_target.fasta> ..."
           % out, file=sys.stderr)
 
 

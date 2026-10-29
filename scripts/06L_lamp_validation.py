@@ -33,7 +33,7 @@ gives many, which is good for sensitivity but is reported so it is visible).
 
 Usage:
     scripts/06L_lamp_validation.py results/candidates/lamp_primers.tsv \\
-        data/raw/tropi_assembly.fasta data/reference/*.fna
+        /path/to/target.fasta /path/to/off-target-1.fasta /path/to/off-target-2.fasta
 """
 import argparse
 import bisect
@@ -205,7 +205,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("lamp_tsv")
     ap.add_argument("target")
-    ap.add_argument("offtargets", nargs="+")
+    ap.add_argument(
+        "offtargets",
+        nargs="*",
+        help="optional off-target genome FASTAs",
+    )
     ap.add_argument("-o", "--out",
                     default="results/candidates/lamp_validated.tsv")
     args = ap.parse_args()
