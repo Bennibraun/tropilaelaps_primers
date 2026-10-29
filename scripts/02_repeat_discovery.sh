@@ -14,8 +14,8 @@
 # Usage: scripts/02_repeat_discovery.sh data/raw/tropi_assembly.fasta path/to/repeatmodeler-families.fa
 set -euo pipefail
 
-ASSEMBLY="${1:?need path to the T. mercedesae assembly FASTA}"
-RM_FAMILIES="${2:?need path to the RepeatModeler families FASTA (<db>-families.fa)}"
+ASSEMBLY="${1:?need path to the target assembly FASTA}"
+RM_FAMILIES="${2:-}"
 
 WORK="data/interim/repeats"
 OUT="data/interim/repeats"
@@ -30,8 +30,9 @@ mkdir -p "$WORK"
 #  - replace '/' in the class (e.g. "LINE/R1") with '_' — candidate IDs get used
 #    as filesystem path components downstream (scripts/04), and RepeatModeler
 #    classes routinely contain '/'.
-echo ">> tagging RepeatModeler families ($RM_FAMILIES)"
-awk '
+if [ -n "$RM_FAMILIES" ]; then
+  echo ">> tagging RepeatModeler families ($RM_FAMILIES)"
+  awk '
   /^>/ {
     n = split(substr($0,2), a, "#")
     if (n > 1) {
@@ -47,6 +48,10 @@ awk '
   }
   { print }
 ' "$RM_FAMILIES" > "$WORK/rm_candidates.fasta"
+else
+  echo ">> no RepeatModeler library supplied; using TRF candidates only"
+  : > "$WORK/rm_candidates.fasta"
+fi
 
 # --- (b) TRF: whole-genome tandem repeat / satellite scan ---
 # Params: match mismatch delta PM PI minscore maxperiod (standard TRF defaults,

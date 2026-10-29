@@ -33,6 +33,43 @@ amount of debris DNA.
 - `07_report.py` - builds `results/report.md` from everything above.
 - `run_pipeline.sh` - runs stages 4 through 7 in order, skipping any stage whose output already exists.
 
+## Reusable full Snakemake workflow
+
+`Snakefile` runs the complete analysis from a target genome FASTA:
+
+1. Assembly QC and reference acquisition
+2. TRF repeat discovery, with optional RepeatModeler families
+3. Candidate off-target screening
+4. Copy-number ranking and conserved-core extraction
+5. PCR primer design and validation, including independent verification
+6. LAMP primer design and validation, including independent verification
+7. Combined report generation
+
+The default off-target panel is the two *Apis* and two *Varroa* assemblies
+listed in `scripts/00_fetch_references.sh`. Configure the target assembly and
+optional name in `config/full.yaml`, then run:
+
+```bash
+snakemake --cores 8 --configfile config/full.yaml \
+  --config target_assembly=/path/to/target.fasta target_name=my_species
+```
+
+For another project, copy `config/full.yaml`, replace the target path and name,
+and use `--configfile` to select it. Use Snakemake's `--directory` option to
+keep each analysis in its own output directory. If a RepeatModeler families FASTA is
+available, provide `repeatmodeler_families`; otherwise the workflow uses its
+TRF-only candidate discovery path:
+
+```bash
+snakemake --directory analyses/my_species --cores 8 \
+  --snakefile /path/to/tropilaelaps_primers/Snakefile \
+  --configfile /path/to/tropilaelaps_primers/config/full.yaml \
+  --config target_assembly=/path/to/my_species.fasta target_name=my_species
+```
+
+Each `--directory` is an independent analysis; outputs are written below its
+`results/` and `data/interim/` directories.
+
 ## Status
 
 - PCR and LAMP tracks (repeat-based, stages 2–7): done, validated, shortlists in `results/`.

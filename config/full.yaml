@@ -1,0 +1,7 @@
+# Defaults for the full workflow. The target FASTA is the only required input:
+# snakemake --cores 8 --config target_assembly=/path/to/genome.fasta
+
+target_assembly: ""
+target_name: ""
+repeatmodeler_families: ""
+threads: 8
